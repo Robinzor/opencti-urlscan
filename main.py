@@ -95,20 +95,17 @@ class URLScanConnector:
         self.score = int(os.getenv("CONFIDENCE_LEVEL", "60"))
         self.update_frequency = int(os.getenv("UPDATE_FREQUENCY", "30"))
         
-        # Create organization only if not in test mode
-        if not os.getenv("TEST_MODE"):
-            external_reference_org = self.helper.api.external_reference.create(
-                source_name="urlscan.io",
-                url="https://urlscan.io/",
-            )
-            self.organization = self.helper.api.identity.create(
-                type="Organization",
-                name="URLScan.io",
-                description="URLScan.io search results importer",
-                externalReferences=[external_reference_org["id"]],
-            )
-        else:
-            self.organization = {"id": "test-org-id"}
+        # Create organization
+        external_reference_org = self.helper.api.external_reference.create(
+            source_name="urlscan.io",
+            url="https://urlscan.io/",
+        )
+        self.organization = self.helper.api.identity.create(
+            type="Organization",
+            name="URLScan.io",
+            description="URLScan.io search results importer",
+            externalReferences=[external_reference_org["id"]],
+        )
 
     def get_label(self, label_value, color=None):
         """Check if a label exists, if not create it."""
@@ -160,10 +157,12 @@ class URLScanConnector:
                     label_id = self.get_label(label, color=color)
                     if label_id:
                         time.sleep(0.5)  # Add delay between operations
-                        if not os.getenv("TEST_MODE"):
-                            self.helper.api.stix_cyber_observable.add_label(
-                                id=observable["id"], label_id=label_id)
-                            logger.info(f"Added label {label} to {observable_value}")
+                        # Update the observable with the new label
+                        self.helper.api.stix_cyber_observable.update(
+                            id=observable["id"],
+                            objectLabel=[label_id]
+                        )
+                        logger.info(f"Added label {label} to {observable_value}")
                 except Exception as e:
                     self.helper.log_error(
                         f"Failed to add label {label} to {observable_value}: {str(e)}")
@@ -309,12 +308,11 @@ class URLScanConnector:
         logger.info(f"Extracted unique labels: {list(labels)}")
         return list(labels)
 
-    def create_opencti_objects(self, data: List[Dict[str, Any]], test_mode: bool = False, only_active: bool = False) -> Dict[str, Any]:
+    def create_opencti_objects(self, data: List[Dict[str, Any]], only_active: bool = False) -> Dict[str, Any]:
         """Create OpenCTI compatible objects from URLScan.io data.
         
         Args:
             data: List of URLScan.io data entries
-            test_mode: If True, run in test mode without creating OpenCTI objects
             only_active: If True, only process URLs with status code 200
         """
         output = {
@@ -341,18 +339,16 @@ class URLScanConnector:
             scan_id = entry.get('_id', '')
             urlscan_result_url = f"https://urlscan.io/result/{scan_id}/"
 
+            # Only create external reference if URL is active (status 200) when only_active is True
+            if only_active and status_code != 200:
+                logger.info(f"Skipping URL {url} with status code {status_code} (only_active=True)")
+                continue
+
             # Create external reference for this specific result
-            if test_mode:
-                external_reference = {"id": "test-external-ref-id"}
-            else:
-                # Only create external reference if URL is active (status 200) when only_active is True
-                if only_active and status_code != 200:
-                    logger.info(f"Skipping external reference for URL {url} with status code {status_code} (only_active=True)")
-                    continue
-                external_reference = self.helper.api.external_reference.create(
-                    source_name="urlscan.io",
-                    url=urlscan_result_url
-                )
+            external_reference = self.helper.api.external_reference.create(
+                source_name="urlscan.io",
+                url=urlscan_result_url
+            )
             
             # Create base labels
             entry_labels = ["urlscan"]  # Base label
@@ -397,8 +393,7 @@ class URLScanConnector:
                                     # Add brand as label with green color
                                     brand_label = brand_name.lower().replace(' ', '-')
                                     entry_labels.append(brand_label)
-                                    if not test_mode:
-                                        self.get_label(brand_label, color="#00ff00")  # Green
+                                    self.get_label(brand_label, color="#00ff00")  # Green
                                 
                                 # Extract sectors from vertical
                                 if 'vertical' in brand:
@@ -407,15 +402,13 @@ class URLScanConnector:
                                         # Add sector as label with yellow color
                                         sector_label = sector.lower().replace(' ', '-')
                                         entry_labels.append(sector_label)
-                                        if not test_mode:
-                                            self.get_label(sector_label, color="#ffff00")  # Yellow
+                                        self.get_label(sector_label, color="#ffff00")  # Yellow
                             elif isinstance(brand, str):
                                 targeting_info['brands'].append(brand)
                                 # Add brand as label with green color
                                 brand_label = brand.lower().replace(' ', '-')
                                 entry_labels.append(brand_label)
-                                if not test_mode:
-                                    self.get_label(brand_label, color="#00ff00")  # Green
+                                self.get_label(brand_label, color="#00ff00")  # Green
                     
                     if 'categories' in urlscan:
                         for category in urlscan['categories']:
@@ -423,8 +416,7 @@ class URLScanConnector:
                             # Add category as label with red color
                             category_label = category.lower().replace(' ', '-')
                             entry_labels.append(category_label)
-                            if not test_mode:
-                                self.get_label(category_label, color="#ff0000")  # Red
+                            self.get_label(category_label, color="#ff0000")  # Red
                 
                 # Check community verdict
                 community = verdicts.get('community', {})
@@ -457,21 +449,14 @@ class URLScanConnector:
             logger.info(f"Creating observable for URL {url} with labels: {entry_labels}")
 
             # Create URL observable
-            if test_mode:
-                url_obs = {
-                    "id": f"test-url-{url}",
-                    "value": url,
-                    "type": "Url"
-                }
-            else:
-                url_obs = self.create_observable(
-                    "Url.value",
-                    url,
-                    f"URLScan.io search result for {url}",
-                    "Url",
-                    external_reference["id"],
-                    entry_labels
-                )
+            url_obs = self.create_observable(
+                "Url.value",
+                url,
+                f"URLScan.io search result for {url}",
+                "Url",
+                external_reference["id"],
+                entry_labels
+            )
 
             if url_obs:
                 obj = {
@@ -513,105 +498,47 @@ class URLScanConnector:
                     if 'domain' in page_info:
                         domain = page_info['domain']
                         logger.info(f"Creating domain observable for: {domain}")
-                        if test_mode:
-                            domain_obs = {
-                                "id": f"test-domain-{domain}",
-                                "value": domain,
-                                "type": "Domain-Name"
-                            }
-                        else:
-                            domain_obs = self.create_observable(
-                                "Domain-Name.value",
-                                domain,
-                                f"Domain associated with {url}",
-                                "Domain-Name",
-                                external_reference["id"],
-                                entry_labels
-                            )
+                        domain_obs = self.create_observable(
+                            "Domain-Name.value",
+                            domain,
+                            f"Domain associated with {url}",
+                            "Domain-Name",
+                            external_reference["id"],
+                            entry_labels
+                        )
                         if domain_obs:
                             logger.info(f"Successfully created domain observable: {domain}")
                             
                             # Add relationship between URL and domain
-                            relationship = {
-                                "source": url_obs["id"],
-                                "target": domain_obs["id"],
-                                "type": "related-to",
-                                "description": f"URL {url} is related to domain {domain}"
-                            }
-                            output["relationships"].append(relationship)
-                            
-                            # Create actual STIX relationship in OpenCTI
-                            if not test_mode:
-                                try:
-                                    stix_relationship = self.helper.api.stix_core_relationship.create(
-                                        fromId=url_obs["id"],
-                                        toId=domain_obs["id"],
-                                        relationship_type="related-to",
-                                        description=f"URL {url} is related to domain {domain}",
-                                        createdBy=self.organization["id"]
-                                    )
-                                    logger.info(f"Created STIX relationship between URL and domain {domain}")
-                                except Exception as e:
-                                    logger.error(f"Failed to create STIX relationship: {str(e)}")
-                            
-                            # Add to knowledge section
-                            knowledge_entry = {
-                                "type": "relationship",
-                                "source": url_obs["id"],
-                                "target": domain_obs["id"],
-                                "relationship_type": "related-to",
-                                "description": f"URL {url} is related to domain {domain}",
-                                "created_at": datetime.now().isoformat(),
-                                "created_by": self.organization["id"]
-                            }
-                            output["knowledge"].append(knowledge_entry)
-
-                # Create relationships with sectors
-                for sector in targeting_info['sectors']:
-                    if test_mode:
-                        # In test mode, create a mock sector object
-                        sector_obj = {
-                            "id": f"test-sector-{sector.lower().replace(' ', '-')}",
-                            "name": sector
-                        }
-                    else:
-                        sector_obj = self.get_or_create_sector(sector)
-                    
-                    if sector_obj:
-                        # Create relationship between URL and sector
-                        relationship = {
-                            "source": url_obs["id"],
-                            "target": sector_obj["id"],
-                            "type": "related-to",
-                            "description": f"URL {url} is related to sector {sector}"
-                        }
-                        output["relationships"].append(relationship)
-                        
-                        # Create actual STIX relationship in OpenCTI
-                        if not test_mode:
                             try:
                                 stix_relationship = self.helper.api.stix_core_relationship.create(
                                     fromId=url_obs["id"],
-                                    toId=sector_obj["id"],
+                                    toId=domain_obs["id"],
                                     relationship_type="related-to",
-                                    description=f"URL {url} is related to sector {sector}",
+                                    description=f"URL {url} is related to domain {domain}",
                                     createdBy=self.organization["id"]
                                 )
-                                logger.info(f"Created STIX relationship between URL and sector {sector}")
+                                logger.info(f"Created STIX relationship between URL and domain {domain}")
                             except Exception as e:
                                 logger.error(f"Failed to create STIX relationship: {str(e)}")
-                        
-                        # Add to knowledge section
-                        knowledge_entry = {
-                            "type": "relationship",
-                            "source": url_obs["id"],
-                            "target": sector_obj["id"],
-                            "relationship_type": "related-to",
-                            "description": f"URL {url} is related to sector {sector}",
-                            "created_at": datetime.now().isoformat(),
-                            "created_by": self.organization["id"]
-                        }
-                        output["knowledge"].append(knowledge_entry)
+
+                # Create relationships with sectors
+                for sector in targeting_info['sectors']:
+                    sector_obj = self.get_or_create_sector(sector)
+                    
+                    if sector_obj:
+                        # Create relationship between URL and sector
+                        try:
+                            stix_relationship = self.helper.api.stix_core_relationship.create(
+                                fromId=url_obs["id"],
+                                toId=sector_obj["id"],
+                                relationship_type="related-to",
+                                description=f"URL {url} is related to sector {sector}",
+                                createdBy=self.organization["id"]
+                            )
+                            logger.info(f"Created STIX relationship between URL and sector {sector}")
+                        except Exception as e:
+                            logger.error(f"Failed to create STIX relationship: {str(e)}")
 
                 # Create IP observable if available
                 if 'page' in entry and 'ip' in entry['page']:
@@ -625,58 +552,31 @@ class URLScanConnector:
                         entry_labels
                     )
                     if ip_obs:
-                        # Add relationship between URL and IP
-                        relationship = {
-                            "source": url_obs["id"],
-                            "target": ip_obs["id"],
-                            "type": "related-to",
-                            "description": f"URL {url} is related to IP {ip}"
-                        }
-                        output["relationships"].append(relationship)
-                        
-                        # Create actual STIX relationship in OpenCTI
-                        if not test_mode:
-                            try:
-                                stix_relationship = self.helper.api.stix_core_relationship.create(
-                                    fromId=url_obs["id"],
-                                    toId=ip_obs["id"],
-                                    relationship_type="related-to",
-                                    description=f"URL {url} is related to IP {ip}",
-                                    createdBy=self.organization["id"]
-                                )
-                                logger.info(f"Created STIX relationship between URL and IP {ip}")
-                            except Exception as e:
-                                logger.error(f"Failed to create STIX relationship: {str(e)}")
-                        
-                        # Add to knowledge section
-                        knowledge_entry = {
-                            "type": "relationship",
-                            "source": url_obs["id"],
-                            "target": ip_obs["id"],
-                            "relationship_type": "related-to",
-                            "description": f"URL {url} is related to IP {ip}",
-                            "created_at": datetime.now().isoformat(),
-                            "created_by": self.organization["id"]
-                        }
-                        output["knowledge"].append(knowledge_entry)
+                        # Create relationship between URL and IP
+                        try:
+                            stix_relationship = self.helper.api.stix_core_relationship.create(
+                                fromId=url_obs["id"],
+                                toId=ip_obs["id"],
+                                relationship_type="related-to",
+                                description=f"URL {url} is related to IP {ip}",
+                                createdBy=self.organization["id"]
+                            )
+                            logger.info(f"Created STIX relationship between URL and IP {ip}")
+                        except Exception as e:
+                            logger.error(f"Failed to create STIX relationship: {str(e)}")
 
                 # Add malicious status as comment if applicable
                 if is_malicious:
                     logger.info(f"Processing malicious status for URL {url}")
-                    if test_mode:
-                        # In test mode, simulate existing comments and labels
+                    # Check if there's an existing malicious comment
+                    try:
+                        existing_comments = self.helper.api.stix_cyber_observable.notes(id=url_obs["id"])
+                        # Get labels from the observable itself
+                        existing_labels = url_obs.get("labels", [])
+                    except Exception as e:
+                        logger.error(f"Failed to get existing comments/labels: {str(e)}")
                         existing_comments = []
                         existing_labels = []
-                    else:
-                        # Check if there's an existing malicious comment
-                        try:
-                            existing_comments = self.helper.api.stix_cyber_observable.notes(id=url_obs["id"])
-                            # Get labels from the observable itself
-                            existing_labels = url_obs.get("labels", [])
-                        except Exception as e:
-                            logger.error(f"Failed to get existing comments/labels: {str(e)}")
-                            existing_comments = []
-                            existing_labels = []
                     
                     # Check if the status has changed (was not malicious before)
                     status_changed = not any(
@@ -703,25 +603,15 @@ class URLScanConnector:
                         
                         comment_content += f"\nDetails: {json.dumps(verdict_details, indent=2)}"
                         
-                        comment = {
-                            "content": comment_content,
-                            "created_at": datetime.now().isoformat(),
-                            "created_by": self.organization["id"]
-                        }
-                        
-                        if not test_mode:
-                            try:
-                                self.helper.api.note.create(
-                                    content=comment["content"],
-                                    createdBy=self.organization["id"],
-                                    objectId=url_obs["id"]
-                                )
-                                logger.info(f"Added malicious comment for URL {url}")
-                            except Exception as e:
-                                logger.error(f"Failed to add malicious comment: {str(e)}")
-                        
-                        obj["malicious_comment"] = comment
-                        logger.info(f"Comment would be added in test mode: {comment['content']}")
+                        try:
+                            self.helper.api.note.create(
+                                content=comment_content,
+                                createdBy=self.organization["id"],
+                                objectId=url_obs["id"]
+                            )
+                            logger.info(f"Added malicious comment for URL {url}")
+                        except Exception as e:
+                            logger.error(f"Failed to add malicious comment: {str(e)}")
 
                 output["objects"].append(obj)
                 logger.info(f"Successfully created observable for URL {url}")
@@ -740,17 +630,15 @@ class URLScanConnector:
         except Exception as e:
             logger.error(f"Error saving data to {filename}: {str(e)}")
 
-    def run(self, test_mode: bool = False, query: str = None, only_active: bool = False):
+    def run(self, query: str = None, only_active: bool = False):
         """Run the connector.
         
         Args:
-            test_mode: If True, run in test mode limited to 1 domain
             query: Search query for URLScan.io (if None, will use domains from OpenCTI)
             only_active: If True, only process URLs with status code 200
         """
         try:
             print(f"\nStarting URLScan.io enrichment")
-            print(f"Test mode: {'enabled' if test_mode else 'disabled'}")
             print(f"Only active URLs: {'enabled' if only_active else 'disabled'}")
             print(f"Update frequency: {self.update_frequency} seconds")
             
@@ -798,7 +686,7 @@ class URLScanConnector:
 
             # Create OpenCTI objects
             print("\nProcessing results...")
-            output = self.create_opencti_objects(data, False, self.update_existing_data)
+            output = self.create_opencti_objects(data, only_active)
             print(f"Results pushed to OpenCTI for {entity_type} {value}")
             
         except Exception as e:
@@ -808,7 +696,6 @@ class URLScanConnector:
 
 def main():
     parser = argparse.ArgumentParser(description='URLScan.io OpenCTI Connector')
-    parser.add_argument('-t', '--test', action='store_true', help='Run in test mode (no OpenCTI integration)')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('-a', '--active-only', action='store_true', help='Only process URLs with status code 200')
     parser.add_argument('domain', nargs='?', default=None, help='Domain to search for in URLScan.io (if not provided, will use all domains from OpenCTI)')
@@ -818,7 +705,7 @@ def main():
         logger.setLevel(logging.DEBUG)
 
     connector = URLScanConnector()
-    connector.run(test_mode=args.test, query=args.domain, only_active=args.active_only)
+    connector.run(query=args.domain, only_active=args.active_only)
 
 if __name__ == "__main__":
     main() 
