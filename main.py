@@ -68,7 +68,7 @@ class URLScanConnector:
             "connector": {
                 "id": "urlscan-connector",
                 "type": "INTERNAL_ENRICHMENT",
-                "name": "URLScan.io Connector",
+                "name": "URLScan.io",
                 "scope": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
                 "confidence_level": int(os.getenv("CONFIDENCE_LEVEL", "60")),
                 "log_level": "info",
