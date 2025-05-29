@@ -1,116 +1,170 @@
 # URLScan.io OpenCTI Connector
 
-This connector enriches Domain-Name and URL observables in OpenCTI with data from URLScan.io. It provides additional context, relationships, and threat intelligence for your observables.
+A powerful connector that enriches OpenCTI observables with data from URLScan.io, providing detailed analysis of URLs and domains for threat intelligence.
 
 ## Features
 
-- Enriches both Domain-Name and URL observables
-- Fetches detailed information from URLScan.io including:
-  - Screenshots
-  - Verdicts (malicious, phishing, malware)
-  - Related domains and IPs
-  - TLS information
-  - ASN and country data
-- Creates relationships between observables
-- Adds labels based on URLScan.io verdicts
-- Adds detailed comments with threat intelligence
-- Supports both automatic and manual enrichment
+- **Automated Enrichment**: Automatically enriches URLs and domains in OpenCTI with URLScan.io data
+- **Comprehensive Analysis**: Includes verdicts, targeting information, and technical details
+- **Smart Rate Limiting**: Respects URLScan.io's limit of 100 requests per hour
+- **Relationship Mapping**: Creates relationships between URLs, domains, IPs, and targeted sectors
+- **Label Management**: Automatically adds relevant labels based on analysis results
+- **External References**: Links to detailed URLScan.io reports
+- **Note Creation**: Generates detailed analysis notes with verdicts and findings
 
-## Configuration
+## Prerequisites
 
-The connector can be configured using environment variables:
-
-```env
-OPENCTI_API_URL=http://localhost:4000
-OPENCTI_API_KEY=your-api-key
-OPENCTI_VERIFY_SSL=false
-URLSCAN_CONFIDENCE_LEVEL=60
-URLSCAN_UPDATE_EXISTING_DATA=false
-URLSCAN_UPDATE_FREQUENCY=30
-```
-
-### Environment Variables
-
-- `OPENCTI_API_URL`: URL of your OpenCTI instance
-- `OPENCTI_API_KEY`: Your OpenCTI API key
-- `OPENCTI_VERIFY_SSL`: Whether to verify SSL certificates
-- `URLSCAN_CONFIDENCE_LEVEL`: Confidence level for created observables (default: 60)
-- `URLSCAN_UPDATE_EXISTING_DATA`: Whether to update existing data (default: false)
-- `URLSCAN_UPDATE_FREQUENCY`: How often to check for updates in seconds (default: 30)
-
-## Usage
-
-### Running the Connector
-
-```bash
-python main.py
-```
-
-### Command Line Options
-
-- `-t, --test`: Run in test mode (no OpenCTI integration)
-- `-d, --debug`: Enable debug logging
-- `-a, --active-only`: Only process URLs with status code 200
-- `domain`: Optional domain to search for in URLScan.io
-
-### Example Commands
-
-```bash
-# Run normally
-python main.py
-
-# Run in test mode
-python main.py -t
-
-# Run with debug logging
-python main.py -d
-
-# Only process active URLs
-python main.py -a
-
-# Search for specific domain
-python main.py example.com
-```
-
-## Enrichment Process
-
-1. When a Domain-Name or URL observable is selected for enrichment:
-   - The connector fetches data from URLScan.io
-   - Creates relationships with related domains and IPs
-   - Adds labels based on verdicts
-   - Creates detailed comments with threat intelligence
-
-2. For malicious URLs:
-   - Adds "malicious" and "urlscan-malicious" labels
-   - Creates relationships with targeted sectors
-   - Adds detailed comments about the malicious activity
-
-3. The connector maintains a 30-second update frequency to check for new data
-
-## Output
-
-The connector creates:
-- Relationships between observables
-- Labels based on URLScan.io verdicts
-- Detailed comments with threat intelligence
-- Knowledge entries for relationships
-
-## Requirements
-
-- Python 3.7+
-- OpenCTI Platform
+- Python 3.8 or higher
+- OpenCTI platform (version 5.0 or higher)
 - URLScan.io API access
+- Required Python packages (see `requirements.txt`)
 
 ## Installation
 
-1. Clone the repository
-2. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-3. Configure environment variables
-4. Run the connector
+1. Clone the repository:
+```bash
+git clone https://github.com/yourusername/opencti-urlscan.git
+cd opencti-urlscan
+```
+
+2. Install required packages:
+```bash
+pip install -r requirements.txt
+```
+
+3. Configure environment variables:
+```bash
+cp .env.example .env
+```
+
+Edit the `.env` file with your configuration:
+```env
+OPENCTI_API_URL=http://localhost:8080
+OPENCTI_API_KEY=your-api-key
+CONNECTOR_SCOPE=Domain-Name,Url
+CONFIDENCE_LEVEL=60
+CONNECTOR_AUTO=true
+ONLY_ACTIVE_URLS=false
+UPDATE_EXISTING_DATA=true
+```
+
+## Docker Setup
+
+1. Create a `Dockerfile`:
+```dockerfile
+FROM python:3.8-slim
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+CMD ["python", "main.py"]
+```
+
+2. Build and run:
+```bash
+docker build -t urlscan-connector .
+docker run -d --name urlscan-connector urlscan-connector
+```
+
+## Usage
+
+### Running as a Service
+
+1. Start the connector in normal mode:
+```bash
+python main.py
+```
+
+The connector will:
+- Listen for new observables in OpenCTI
+- Automatically enrich them with URLScan.io data
+- Create relationships and notes
+- Add relevant labels
+
+### Testing Mode
+
+Test the connector with a specific domain:
+```bash
+python main.py -t example.com
+```
+
+Additional options:
+- `-d, --debug`: Enable debug logging
+- `-a, --active-only`: Only process URLs with status code 200
+- `-t, --test`: Run in test mode
+
+## Configuration Options
+
+| Environment Variable | Description | Default |
+|---------------------|-------------|---------|
+| `OPENCTI_API_URL` | OpenCTI API URL | `http://localhost:8080` |
+| `OPENCTI_API_KEY` | OpenCTI API key | Required |
+| `CONNECTOR_SCOPE` | Types of observables to process | `Domain-Name,Url` |
+| `CONFIDENCE_LEVEL` | Confidence level for enrichment | `60` |
+| `CONNECTOR_AUTO` | Enable automatic enrichment | `true` |
+| `ONLY_ACTIVE_URLS` | Only process active URLs | `false` |
+| `UPDATE_EXISTING_DATA` | Update existing data | `true` |
+
+## Rate Limiting
+
+The connector implements rate limiting to respect URLScan.io's limit of 100 requests per hour:
+- Tracks request count and timing in memory
+- Automatically waits when limit is reached
+- Resets counter after one hour
+- Provides warning messages when waiting
+
+## Enrichment Details
+
+The connector enriches observables with:
+
+1. **Verdicts**:
+   - Overall malicious status
+   - URLScan.io analysis
+   - Community verdicts
+   - Engine results
+
+2. **Targeting Information**:
+   - Targeted brands
+   - Categories
+   - Sectors
+
+3. **Technical Details**:
+   - Page information
+   - TLS details
+   - IP and ASN information
+   - Status codes
+
+4. **Relationships**:
+   - URL to Domain
+   - URL to IP
+   - URL to Sectors
+   - URL to Organizations
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch
+3. Commit your changes
+4. Push to the branch
+5. Create a Pull Request
 
 ## License
 
-This project is licensed under the MIT License - see the LICENSE file for details. 
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Support
+
+For support, please:
+1. Check the [documentation](docs/)
+2. Open an issue in the repository
+3. Contact the maintainers
+
+## Acknowledgments
+
+- [OpenCTI](https://www.opencti.io/)
+- [URLScan.io](https://urlscan.io/)
+- All contributors and users of this connector 

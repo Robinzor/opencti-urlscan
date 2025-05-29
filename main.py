@@ -16,6 +16,8 @@ import yaml
 from pathlib import Path
 import uuid
 import pytz
+import redis
+from redis.exceptions import RedisError
 
 # Set timezone to Amsterdam
 amsterdam_tz = pytz.timezone('Europe/Amsterdam')
@@ -44,6 +46,44 @@ logging.basicConfig(
     handlers=[logging.StreamHandler()]
 )
 logger = logging.getLogger(__name__)
+
+class RateLimiter:
+    """Simple rate limiter using class variables."""
+    
+    # Class variables for rate limiting
+    _last_request_time = 0
+    _request_count = 0
+    _rate_limit = 100  # requests per hour
+    _window = 3600    # 1 hour in seconds
+    
+    @classmethod
+    def check_rate_limit(cls):
+        """Check if we've hit the rate limit."""
+        current_time = time.time()
+        
+        # Reset counter if window has passed
+        if current_time - cls._last_request_time > cls._window:
+            cls._request_count = 0
+            cls._last_request_time = current_time
+            return False
+            
+        # Check if we've hit the limit
+        if cls._request_count >= cls._rate_limit:
+            return True
+            
+        # Increment counter
+        cls._request_count += 1
+        return False
+        
+    @classmethod
+    def get_wait_time(cls):
+        """Get the time to wait before next request."""
+        current_time = time.time()
+        time_passed = current_time - cls._last_request_time
+        return max(0, cls._window - time_passed)
+
+# Initialize rate limiter
+rate_limiter = RateLimiter()
 
 def defang_url(url: str) -> str:
     """
@@ -893,6 +933,12 @@ class URLScanConnector:
             print(f"\nMaking request to URLScan.io API: {url}")
             
             try:
+                # Check rate limit before making request
+                if rate_limiter.check_rate_limit():
+                    wait_time = rate_limiter.get_wait_time()
+                    logger.warning(f"Rate limit reached. Waiting {wait_time:.0f} seconds before next request.")
+                    time.sleep(wait_time)
+                
                 response = requests.get(url, headers=headers, timeout=30)
                 print(f"Response status code: {response.status_code}")
                 print(f"Response headers: {dict(response.headers)}")
@@ -920,6 +966,12 @@ class URLScanConnector:
                         if result_url:
                             print(f"\nFetching full result from: {result_url}")
                             try:
+                                # Check rate limit before each request
+                                if rate_limiter.check_rate_limit():
+                                    wait_time = rate_limiter.get_wait_time()
+                                    logger.warning(f"Rate limit reached. Waiting {wait_time:.0f} seconds before next request.")
+                                    time.sleep(wait_time)
+                                
                                 result_response = requests.get(result_url, headers=headers, timeout=30)
                                 if result_response.status_code == 200:
                                     full_result = result_response.json()
