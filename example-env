@@ -1,0 +1,12 @@
+# OpenCTI Configuration
+OPENCTI_API_URL=http://opencti:8080
+OPENCTI_API_KEY=your-api-key
+OPENCTI_VERIFY_SSL=false
+
+# URLScan.io Connector Configuration
+URLSCAN_CONFIDENCE_LEVEL=60
+URLSCAN_UPDATE_EXISTING_DATA=false
+URLSCAN_UPDATE_FREQUENCY=30
+
+# Optional: Test Mode
+# TEST_MODE=true
