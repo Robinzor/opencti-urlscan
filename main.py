@@ -11,6 +11,8 @@ import time
 import stix2
 import urllib3
 import re
+import yaml
+from pathlib import Path
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -55,6 +57,156 @@ def defang_url(url: str) -> str:
 # Print banner
 print(BANNER)
 
+class URLScanBuilder:
+    """URLScan builder."""
+
+    def __init__(
+        self,
+        helper: OpenCTIConnectorHelper,
+        author: stix2.Identity,
+        stix_objects: [],
+        stix_entity: dict,
+        opencti_entity: dict,
+        data: dict,
+    ) -> None:
+        """Initialize URLScan builder."""
+        self.helper = helper
+        self.author = author
+        self.bundle = stix_objects + [self.author]
+        self.opencti_entity = opencti_entity
+        self.stix_entity = stix_entity
+        self.attributes = data["attributes"] if "attributes" in data else data
+        self.score = self._compute_score()
+
+        # Add the external reference
+        if "result" in data:
+            link = f"https://urlscan.io/result/{data['_id']}/"
+            self.helper.log_debug(f"[URLScan] adding external reference {link}")
+            self.external_reference = self._create_external_reference(
+                link,
+                "URLScan.io Report",
+            )
+        else:
+            self.external_reference = None
+
+    def _compute_score(self) -> int:
+        """Compute the score for the observable based on verdicts."""
+        score = 0
+        if "verdicts" in self.attributes:
+            verdicts = self.attributes["verdicts"]
+            if verdicts.get("overall", {}).get("malicious"):
+                score = 100
+            elif verdicts.get("urlscan", {}).get("malicious"):
+                score = 80
+            elif verdicts.get("community", {}).get("malicious"):
+                score = 60
+            elif verdicts.get("engines", {}):
+                malicious_count = sum(1 for v in verdicts["engines"].values() if v.get("malicious"))
+                if malicious_count > 0:
+                    score = 40
+        return score
+
+    def _create_external_reference(self, url: str, description: str) -> dict:
+        """Create an external reference with the given url."""
+        external_reference = {
+            "source_name": self.author["name"],
+            "url": url,
+            "description": description,
+        }
+        OpenCTIStix2.put_attribute_in_extension(
+            self.stix_entity,
+            STIX_EXT_OCTI_SCO,
+            "external_references",
+            external_reference,
+            True,
+        )
+        return external_reference
+
+    def create_indicator_based_on(self, pattern: str):
+        """Create an Indicator if the score is high enough."""
+        if self.score >= 60:  # Only create indicator if score is high enough
+            self.helper.log_debug(f"[URLScan] creating indicator with pattern {pattern}")
+            indicator = stix2.Indicator(
+                id=Indicator.generate_id(pattern),
+                created_by_ref=self.author,
+                name=self.opencti_entity["observable_value"],
+                description="Created by URLScan.io connector based on malicious verdicts",
+                confidence=self.helper.connect_confidence_level,
+                pattern=pattern,
+                pattern_type="stix",
+                valid_until=self.helper.api.stix2.format_date(
+                    datetime.datetime.utcnow() + datetime.timedelta(days=30)
+                ),
+                external_references=[self.external_reference] if self.external_reference else None,
+                custom_properties={
+                    "x_opencti_main_observable_type": self.opencti_entity["entity_type"],
+                    "x_opencti_detection": True,
+                    "x_opencti_score": self.score,
+                },
+            )
+            relationship = stix2.Relationship(
+                id=StixCoreRelationship.generate_id(
+                    "based-on",
+                    indicator.id,
+                    self.stix_entity["id"],
+                ),
+                relationship_type="based-on",
+                created_by_ref=self.author,
+                source_ref=indicator.id,
+                target_ref=self.stix_entity["id"],
+                confidence=self.helper.connect_confidence_level,
+                allow_custom=True,
+            )
+            self.bundle += [indicator, relationship]
+
+    def create_note(self, abstract: str, content: str):
+        """Create a Note with the given abstract and content."""
+        self.helper.log_debug(f"[URLScan] creating note with abstract {abstract}")
+        self.bundle.append(
+            stix2.Note(
+                id=Note.generate_id(datetime.datetime.now().isoformat(), content),
+                abstract=abstract,
+                content=content,
+                created_by_ref=self.author,
+                object_refs=[self.stix_entity["id"]],
+            )
+        )
+
+    def create_notes(self):
+        """Create Notes with the analysis results."""
+        if "verdicts" in self.attributes:
+            content = "## URLScan.io Analysis Results\n\n"
+            content += "| Category | Result |\n"
+            content += "|----------|--------|\n"
+            
+            verdicts = self.attributes["verdicts"]
+            if "overall" in verdicts:
+                content += f"| Overall | {'Malicious' if verdicts['overall'].get('malicious') else 'Clean'} |\n"
+            if "urlscan" in verdicts:
+                content += f"| URLScan | {'Malicious' if verdicts['urlscan'].get('malicious') else 'Clean'} |\n"
+            if "community" in verdicts:
+                content += f"| Community | {'Malicious' if verdicts['community'].get('malicious') else 'Clean'} |\n"
+            
+            if "engines" in verdicts:
+                content += "\n## Engine Results\n\n"
+                content += "| Engine | Result |\n"
+                content += "|--------|--------|\n"
+                for engine, result in verdicts["engines"].items():
+                    content += f"| {engine} | {'Malicious' if result.get('malicious') else 'Clean'} |\n"
+            
+            self.create_note("URLScan.io Results", content)
+
+    def send_bundle(self) -> str:
+        """Serialize and send the bundle to be inserted."""
+        self.helper.metric.state("idle")
+        if self.bundle is not None:
+            self.helper.log_debug(f"[URLScan] sending bundle: {self.bundle}")
+            self.helper.metric.inc("record_send", len(self.bundle))
+            serialized_bundle = self.helper.stix2_create_bundle(self.bundle)
+            bundles_sent = self.helper.send_stix2_bundle(serialized_bundle)
+            return f"Sent {len(bundles_sent)} stix bundle(s) for worker import"
+        return "Nothing to attach"
+
 class URLScanConnector:
     def __init__(self):
         print("Initializing URLScan connector...")
@@ -77,26 +229,105 @@ class URLScanConnector:
             }
         }
         
-        self.helper = OpenCTIConnectorHelper(config)
+        self.helper = OpenCTIConnectorHelper(config, playbook_compatible=True)
         print("Connector initialized successfully")
         
         # Get configuration values
-        self.interval = int(os.getenv("INTERVAL", "300"))
+        self.only_active_urls = os.getenv("ONLY_ACTIVE_URLS", "true").lower() == "true"
         self.update_existing_data = os.getenv("UPDATE_EXISTING_DATA", "true").lower() == "true"
-        self.score = int(os.getenv("CONFIDENCE_LEVEL", "60"))
-        self.update_frequency = int(os.getenv("UPDATE_FREQUENCY", "30"))
+        self.confidence_level = int(os.getenv("CONFIDENCE_LEVEL", "60"))
         
         # Create organization
-        external_reference_org = self.helper.api.external_reference.create(
-            source_name="urlscan.io",
-            url="https://urlscan.io/",
-        )
-        self.organization = self.helper.api.identity.create(
-            type="Organization",
+        self.author = stix2.Identity(
+            id=Identity.generate_id("URLScan.io", "organization"),
             name="URLScan.io",
+            identity_class="organization",
             description="URLScan.io search results importer",
-            externalReferences=[external_reference_org["id"]],
+            confidence=self.helper.connect_confidence_level,
         )
+
+    def _process_message(self, data: Dict):
+        """Process a message from OpenCTI."""
+        try:
+            self.helper.metric.inc("run_count")
+            self.helper.metric.state("running")
+            
+            stix_objects = data["stix_objects"]
+            stix_entity = data["stix_entity"]
+            opencti_entity = data["enrichment_entity"]
+
+            # Extract TLP
+            tlp = "TLP:CLEAR"
+            for marking_definition in opencti_entity.get("objectMarking", []):
+                if marking_definition["definition_type"] == "TLP":
+                    tlp = marking_definition["definition"]
+
+            if not OpenCTIConnectorHelper.check_max_tlp(tlp, "TLP:AMBER"):
+                raise ValueError(
+                    "Do not send any data, TLP of the observable is greater than MAX TLP"
+                )
+
+            self.helper.log_debug(
+                "[URLScan] starting enrichment of observable: {"
+                + opencti_entity["observable_value"]
+                + "}"
+            )
+            
+            # Fetch data from URLScan.io
+            if opencti_entity["entity_type"] == "Domain-Name":
+                query = f"domain:{opencti_entity['observable_value']}"
+            else:  # Url
+                query = f"url:{opencti_entity['observable_value']}"
+            
+            logger.info(f"Fetching data from URLScan.io with query: {query}")
+            data = self.fetch_urlscan_data(query)
+            if not data:
+                logger.info(f"No data found for {opencti_entity['entity_type']} {opencti_entity['observable_value']}")
+                return {
+                    "status": "error",
+                    "message": f"No data found for {opencti_entity['entity_type']} {opencti_entity['observable_value']}"
+                }
+
+            # Process each result
+            for result in data:
+                # Skip non-active URLs if only_active_urls is True
+                if self.only_active_urls and result.get('page', {}).get('status') != 200:
+                    logger.info(f"Skipping URL with status {result.get('page', {}).get('status')} as only_active_urls is enabled")
+                    continue
+
+                builder = URLScanBuilder(
+                    self.helper,
+                    self.author,
+                    stix_objects,
+                    stix_entity,
+                    opencti_entity,
+                    result,
+                )
+
+                # Create indicator if malicious
+                if opencti_entity["entity_type"] == "Domain-Name":
+                    builder.create_indicator_based_on(
+                        f"""[domain-name:value = '{opencti_entity["observable_value"]}']"""
+                    )
+                else:  # Url
+                    builder.create_indicator_based_on(
+                        f"""[url:value = '{opencti_entity["observable_value"]}']"""
+                    )
+
+                # Create notes with analysis results
+                builder.create_notes()
+
+                # Send the bundle
+                return builder.send_bundle()
+            
+        except Exception as e:
+            logger.error(f"Error processing message: {str(e)}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return {
+                "status": "error",
+                "message": str(e)
+            }
 
     def get_label(self, label_value, color=None):
         """Check if a label exists, if not create it."""
@@ -131,8 +362,8 @@ class URLScanConnector:
             simple_observable_value=observable_value,
             objectMarking=[stix2.TLP_GREEN["id"]],
             externalReferences=[external_reference_id],
-            createdBy=self.organization["id"],
-            x_opencti_score=self.score,
+            createdBy=self.author["id"],
+            x_opencti_score=self.confidence_level,
             x_opencti_create_indicator=True,
             x_opencti_main_observable_type=observable_type,
         )
@@ -589,7 +820,7 @@ class URLScanConnector:
                         try:
                             self.helper.api.note.create(
                                 content=comment_content,
-                                createdBy=self.organization["id"],
+                                createdBy=self.author["id"],
                                 objectId=url_obs["id"]
                             )
                             logger.info(f"Added malicious comment for URL {url}")
@@ -634,79 +865,6 @@ class URLScanConnector:
             print(f"Error in connector run: {str(e)}")
             import traceback
             print(traceback.format_exc())
-
-    def _process_message(self, data):
-        """Process a message from OpenCTI."""
-        try:
-            logger.info("Received message from OpenCTI")
-            logger.info(f"Message data: {json.dumps(data, indent=2)}")
-            
-            # Get the observable ID from the message
-            observable_id = data.get("entity_id")
-            if not observable_id:
-                logger.error("No entity_id in message")
-                return
-            
-            logger.info(f"Processing observable with ID: {observable_id}")
-            
-            # Get the observable
-            observable = self.helper.api.stix_cyber_observable.read(id=observable_id)
-            if not observable:
-                logger.error(f"Could not find observable with id {observable_id}")
-                return
-            
-            logger.info(f"Found observable: {json.dumps(observable, indent=2)}")
-            
-            # Check if it's a domain or URL
-            entity_type = observable.get("entity_type")
-            if entity_type not in ["Domain-Name", "Url"]:
-                logger.error(f"Unsupported entity type: {entity_type}")
-                return
-            
-            value = observable.get("value")
-            logger.info(f"Processing {entity_type}: {value}")
-            
-            # Fetch data from URLScan.io
-            if entity_type == "Domain-Name":
-                query = f"domain:{value}"
-            else:  # Url
-                query = f"url:{value}"
-            
-            logger.info(f"Fetching data from URLScan.io with query: {query}")
-            data = self.fetch_urlscan_data(query)
-            if not data:
-                logger.info(f"No data found for {entity_type} {value}")
-                return
-
-            logger.info(f"Found {len(data)} results from URLScan.io")
-            
-            # Create OpenCTI objects
-            logger.info("Processing results...")
-            output = self.create_opencti_objects(data, only_active=True)  # Only process URLs with status code 200
-            logger.info(f"Results pushed to OpenCTI for {entity_type} {value}")
-            logger.info(f"Created {len(output['objects'])} objects")
-            logger.info(f"Created {len(output['relationships'])} relationships")
-            logger.info(f"Created {len(output['knowledge'])} knowledge entries")
-
-            # Return success response for internal enrichment
-            return {
-                "status": "success",
-                "message": f"Successfully enriched {entity_type} {value}",
-                "data": {
-                    "objects": output["objects"],
-                    "relationships": output["relationships"],
-                    "knowledge": output["knowledge"]
-                }
-            }
-            
-        except Exception as e:
-            logger.error(f"Error processing message: {str(e)}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return {
-                "status": "error",
-                "message": str(e)
-            }
 
 def main():
     parser = argparse.ArgumentParser(description='URLScan.io OpenCTI Connector')

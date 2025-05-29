@@ -1,0 +1,34 @@
+opencti:
+  url: 'http://localhost:8080'
+  token: 'ChangeMe'
+
+connector:
+  id: 'URLScan'
+  type: 'INTERNAL_ENRICHMENT'
+  name: 'URLScan.io'
+  scope: 'Domain-Name,Url'
+  auto: false  # Enable/disable auto-enrichment of observables
+  log_level: 'info'
+  expose_metrics: false
+
+urlscan:
+  max_tlp: 'TLP:AMBER'
+  replace_with_lower_score: true  # Whether to keep the higher of the URLScan or existing score (false) or force the score to be updated with the URLScan score even if its lower than existing score (true).
+
+  # Domain specific config settings
+  domain_indicator_create_positives: 1  # Create an indicator for Domain based observables once this positive threshold is reached. Note: specify 0 to disable indicator creation
+  domain_indicator_valid_minutes: 2880  # How long the indicator is valid for in minutes
+  domain_indicator_detect: true  # Whether or not to set detection for the indicator to true
+  domain_add_relationships: true  # Whether or not to add IP resolution relationships
+
+  # URL specific config settings
+  url_indicator_create_positives: 1  # Create an indicator for Url based observables once this positive threshold is reached. Note: specify 0 to disable indicator creation
+  url_indicator_valid_minutes: 2880  # How long the indicator is valid for in minutes
+  url_indicator_detect: true  # Whether or not to set detection for the indicator to true
+  url_add_relationships: true  # Whether or not to add domain and IP resolution relationships
+
+  # Generic config settings
+  include_attributes_in_note: true  # Whether or not to include the attributes info in Note
+  only_active_urls: true  # Whether to only process URLs with status code 200
+  update_existing_data: true  # Whether to update existing data or skip if already exists
+  confidence_level: 60  # Confidence level for created objects 
