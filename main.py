@@ -391,11 +391,6 @@ class URLScanBuilder:
                     if "domain" in page:
                         domain = page["domain"]
                         try:
-                            # Skip if domain is the same as the observable value
-                            if domain == self.opencti_entity["observable_value"]:
-                                self.helper.log_debug(f"[URLScan] Skipping domain relationship - domain is the same as observable value")
-                                return "Successfully enriched observable (skipped domain relationship - same as observable value)"
-                                
                             # Create or get domain observable
                             domain_obs = self.helper.api.stix_cyber_observable.create(
                                 simple_observable_key="Domain-Name.value",
@@ -419,13 +414,10 @@ class URLScanBuilder:
                                     description=f"URL {self.opencti_entity['observable_value']} is related to domain {domain}"
                                 )
                                 self.helper.log_debug(f"[URLScan] Added relationship between URL and domain {domain}")
-                                return "Successfully enriched observable with domain relationship"
                             else:
-                                self.helper.log_debug(f"[URLScan] Skipping domain relationship - observables are the same or not found")
-                                return "Successfully enriched observable (skipped domain relationship - observables are the same or not found)"
+                                self.helper.log_error("[URLScan] Could not verify both observables exist for relationship or they are the same")
                         except Exception as e:
                             self.helper.log_error(f"[URLScan] Error creating domain relationship: {str(e)}")
-                            return f"Error creating domain relationship: {str(e)}"
                     
                     # Add IP relationship
                     if "ip" in page:
