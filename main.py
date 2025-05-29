@@ -72,7 +72,7 @@ class URLScanConnector:
                 "scope": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
                 "confidence_level": int(os.getenv("CONFIDENCE_LEVEL", "60")),
                 "log_level": "info",
-                "auto": True,
+                "auto": False,
                 "update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "true").lower() == "true"
             }
         }
