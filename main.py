@@ -16,8 +16,6 @@ import yaml
 from pathlib import Path
 import uuid
 import pytz
-import redis
-from redis.exceptions import RedisError
 
 # Set timezone to Amsterdam
 amsterdam_tz = pytz.timezone('Europe/Amsterdam')
