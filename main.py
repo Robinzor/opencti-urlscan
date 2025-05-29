@@ -304,7 +304,7 @@ class URLScanConnector:
         
         Args:
             data: List of URLScan.io data entries
-            only_active: If True, only process URLs with status code 200
+            only_active: If True, only use the last active URL (status 200) as external reference
         """
         output = {
             "labels": [],
@@ -318,28 +318,32 @@ class URLScanConnector:
         output["labels"] = labels
         logger.info(f"Total unique labels found: {len(labels)}")
 
+        # Find the last active URL for external reference
+        last_active_url = None
+        if only_active:
+            for entry in reversed(data):
+                if 'page' in entry and entry['page'].get('status') == 200:
+                    last_active_url = entry
+                    break
+
         # Process each entry
         for entry in data:
             if 'page' not in entry or 'url' not in entry['page']:
                 continue
 
-            # Check status code based on only_active parameter
-            status_code = entry.get('page', {}).get('status', 0)
             url = entry['page']['url']
-            logger.info(f"Processing URL {url} with status code {status_code}")
+            logger.info(f"Processing URL {url}")
             scan_id = entry.get('_id', '')
             urlscan_result_url = f"https://urlscan.io/result/{scan_id}/"
 
-            # Only create external reference if URL is active (status 200) when only_active is True
-            if only_active and status_code != 200:
-                logger.info(f"Skipping URL {url} with status code {status_code} (only_active=True)")
-                continue
-
-            # Create external reference for this specific result
-            external_reference = self.helper.api.external_reference.create(
-                source_name="urlscan.io",
-                url=urlscan_result_url
-            )
+            # Create external reference only for the last active URL
+            if only_active and entry != last_active_url:
+                external_reference = None
+            else:
+                external_reference = self.helper.api.external_reference.create(
+                    source_name="urlscan.io",
+                    url=urlscan_result_url
+                )
             
             # Create base labels
             entry_labels = ["urlscan"]  # Base label
@@ -445,7 +449,7 @@ class URLScanConnector:
                 url,
                 f"URLScan.io search result for {url}",
                 "Url",
-                external_reference["id"],
+                external_reference["id"] if external_reference else None,
                 entry_labels
             )
 
@@ -494,42 +498,34 @@ class URLScanConnector:
                             domain,
                             f"Domain associated with {url}",
                             "Domain-Name",
-                            external_reference["id"],
+                            external_reference["id"] if external_reference else None,
                             entry_labels
                         )
                         if domain_obs:
                             logger.info(f"Successfully created domain observable: {domain}")
                             
                             # Add relationship between URL and domain
-                            try:
-                                stix_relationship = self.helper.api.stix_core_relationship.create(
-                                    fromId=url_obs["id"],
-                                    toId=domain_obs["id"],
-                                    relationship_type="related-to",
-                                    description=f"URL {url} is related to domain {domain}",
-                                    createdBy=self.organization["id"]
-                                )
-                                logger.info(f"Created STIX relationship between URL and domain {domain}")
-                            except Exception as e:
-                                logger.error(f"Failed to create STIX relationship: {str(e)}")
+                            relationship = {
+                                "source": url_obs["id"],
+                                "target": domain_obs["id"],
+                                "type": "related-to",
+                                "description": f"URL {url} is related to domain {domain}"
+                            }
+                            output["relationships"].append(relationship)
 
                 # Create relationships with sectors
                 for sector in targeting_info['sectors']:
                     sector_obj = self.get_or_create_sector(sector)
                     
                     if sector_obj:
-                        # Create relationship between URL and sector
-                        try:
-                            stix_relationship = self.helper.api.stix_core_relationship.create(
-                                fromId=url_obs["id"],
-                                toId=sector_obj["id"],
-                                relationship_type="related-to",
-                                description=f"URL {url} is related to sector {sector}",
-                                createdBy=self.organization["id"]
-                            )
-                            logger.info(f"Created STIX relationship between URL and sector {sector}")
-                        except Exception as e:
-                            logger.error(f"Failed to create STIX relationship: {str(e)}")
+                        # Add relationship between URL and sector
+                        relationship = {
+                            "source": url_obs["id"],
+                            "target": sector_obj["id"],
+                            "type": "related-to",
+                            "description": f"URL {url} is related to sector {sector}"
+                        }
+                        output["relationships"].append(relationship)
 
                 # Create IP observable if available
                 if 'page' in entry and 'ip' in entry['page']:
@@ -539,22 +535,18 @@ class URLScanConnector:
                         ip,
                         f"IP address associated with {url}",
                         "IPv4-Addr",
-                        external_reference["id"],
+                        external_reference["id"] if external_reference else None,
                         entry_labels
                     )
                     if ip_obs:
-                        # Create relationship between URL and IP
-                        try:
-                            stix_relationship = self.helper.api.stix_core_relationship.create(
-                                fromId=url_obs["id"],
-                                toId=ip_obs["id"],
-                                relationship_type="related-to",
-                                description=f"URL {url} is related to IP {ip}",
-                                createdBy=self.organization["id"]
-                            )
-                            logger.info(f"Created STIX relationship between URL and IP {ip}")
-                        except Exception as e:
-                            logger.error(f"Failed to create STIX relationship: {str(e)}")
+                        # Add relationship between URL and IP
+                        relationship = {
+                            "source": url_obs["id"],
+                            "target": ip_obs["id"],
+                            "type": "related-to",
+                            "description": f"URL {url} is related to IP {ip}"
+                        }
+                        output["relationships"].append(relationship)
 
                 # Add malicious status as comment if applicable
                 if is_malicious:
@@ -690,16 +682,31 @@ class URLScanConnector:
             
             # Create OpenCTI objects
             logger.info("Processing results...")
-            output = self.create_opencti_objects(data, only_active=True)
+            output = self.create_opencti_objects(data, only_active=True)  # Only process URLs with status code 200
             logger.info(f"Results pushed to OpenCTI for {entity_type} {value}")
             logger.info(f"Created {len(output['objects'])} objects")
             logger.info(f"Created {len(output['relationships'])} relationships")
             logger.info(f"Created {len(output['knowledge'])} knowledge entries")
+
+            # Return success response for internal enrichment
+            return {
+                "status": "success",
+                "message": f"Successfully enriched {entity_type} {value}",
+                "data": {
+                    "objects": output["objects"],
+                    "relationships": output["relationships"],
+                    "knowledge": output["knowledge"]
+                }
+            }
             
         except Exception as e:
             logger.error(f"Error processing message: {str(e)}")
             import traceback
             logger.error(traceback.format_exc())
+            return {
+                "status": "error",
+                "message": str(e)
+            }
 
 def main():
     parser = argparse.ArgumentParser(description='URLScan.io OpenCTI Connector')
