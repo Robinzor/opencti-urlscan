@@ -849,7 +849,7 @@ class URLScanConnector:
             
             # Register the connector
             self.helper.api.connector.register(
-                id="urlscan-connector",
+                connector_id="urlscan-connector",
                 name="URLScan.io Connector",
                 type="INTERNAL_ENRICHMENT",
                 scope=os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
