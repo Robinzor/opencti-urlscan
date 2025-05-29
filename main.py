@@ -61,29 +61,30 @@ class URLScanConnector:
         # Create config dictionary from environment variables
         config = {
             "opencti": {
-                "url": os.getenv("OPENCTI_API_URL", "http://localhost:4000"),
-                "token": os.getenv("OPENCTI_API_KEY", "test-key"),
+                "url": os.getenv("OPENCTI_API_URL", "http://opencti:8080"),
+                "token": os.getenv("OPENCTI_API_KEY", "your-api-key"),
                 "verify_ssl": os.getenv("OPENCTI_VERIFY_SSL", "false").lower() == "true"
             },
             "connector": {
                 "id": "urlscan-connector",
                 "type": "INTERNAL_ENRICHMENT",
                 "name": "URLScan.io Connector",
-                "scope": "urlscan",
+                "scope": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
                 "confidence_level": int(os.getenv("CONFIDENCE_LEVEL", "60")),
                 "log_level": "info",
                 "auto": True,
                 "update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
-                "entity_types": ["Domain-Name", "Url"],
+                "entity_types": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url").split(","),
                 "connector_type": "INTERNAL_ENRICHMENT",
-                "connector_scope": "urlscan",
+                "connector_scope": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
                 "connector_confidence_level": int(os.getenv("CONFIDENCE_LEVEL", "60")),
                 "connector_log_level": "info",
                 "connector_auto": True,
                 "connector_update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
-                "connector_entity_types": ["Domain-Name", "Url"],
-                "connector_scope": "urlscan",
-                "connector_scope_types": ["Domain-Name", "Url"]
+                "connector_entity_types": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url").split(","),
+                "connector_scope": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
+                "connector_scope_types": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url").split(","),
+                "connector_workflow_id": "urlscan-workflow"
             }
         }
         
@@ -845,6 +846,19 @@ class URLScanConnector:
             print(f"Test mode: {'enabled' if test_mode else 'disabled'}")
             print(f"Only active URLs: {'enabled' if only_active else 'disabled'}")
             print(f"Update frequency: {self.update_frequency} seconds")
+            
+            # Register the connector
+            self.helper.api.connector.register(
+                id="urlscan-connector",
+                name="URLScan.io Connector",
+                type="INTERNAL_ENRICHMENT",
+                scope=os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
+                confidence_level=int(os.getenv("CONFIDENCE_LEVEL", "60")),
+                log_level="info",
+                auto=True,
+                update_existing_data=os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
+                entity_types=os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url").split(",")
+            )
             
             # Start the connector
             self.helper.listen(self._process_message)
