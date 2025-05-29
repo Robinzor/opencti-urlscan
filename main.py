@@ -930,22 +930,49 @@ class URLScanConnector:
             }
             print(f"\nMaking request to URLScan.io API: {url}")
             
-            try:
-                # Check rate limit before making request
-                if rate_limiter.check_rate_limit():
-                    wait_time = rate_limiter.get_wait_time()
-                    logger.warning(f"Rate limit reached. Waiting {wait_time:.0f} seconds before next request.")
-                    time.sleep(wait_time)
+            def make_request_with_retry(url, headers, max_retries=3, initial_wait=5):
+                retries = 0
+                while retries < max_retries:
+                    try:
+                        # Check rate limit before making request
+                        if rate_limiter.check_rate_limit():
+                            wait_time = rate_limiter.get_wait_time()
+                            logger.warning(f"Rate limit reached. Waiting {wait_time:.0f} seconds before next request.")
+                            time.sleep(wait_time)
+                        
+                        response = requests.get(url, headers=headers, timeout=30)
+                        
+                        # Handle 429 Too Many Requests
+                        if response.status_code == 429:
+                            # When we get 429, we've hit the hourly limit
+                            # Wait for a full hour before retrying
+                            wait_time = 3600  # 1 hour in seconds
+                            logger.warning(f"Hourly rate limit exceeded (429). Waiting {wait_time} seconds (1 hour) before retry...")
+                            time.sleep(wait_time)
+                            # Reset our rate limiter counter since we've waited a full hour
+                            rate_limiter._request_count = 0
+                            rate_limiter._last_request_time = time.time()
+                            continue
+                            
+                        response.raise_for_status()
+                        return response
+                        
+                    except requests.exceptions.RequestException as e:
+                        if retries < max_retries - 1:
+                            retries += 1
+                            wait_time = initial_wait * (2 ** (retries - 1))
+                            logger.warning(f"Request failed. Retry {retries}/{max_retries}. Waiting {wait_time} seconds...")
+                            time.sleep(wait_time)
+                        else:
+                            raise
                 
-                response = requests.get(url, headers=headers, timeout=30)
+                raise Exception(f"Max retries ({max_retries}) exceeded")
+            
+            try:
+                response = make_request_with_retry(url, headers)
                 print(f"Response status code: {response.status_code}")
                 print(f"Response headers: {dict(response.headers)}")
                 
-                if response.status_code != 200:
-                    print(f"Error response from URLScan.io: {response.text}")
-                    return []
-                    
-                response.raise_for_status()
                 data = response.json()
                 
                 # Print total results found
@@ -964,13 +991,7 @@ class URLScanConnector:
                         if result_url:
                             print(f"\nFetching full result from: {result_url}")
                             try:
-                                # Check rate limit before each request
-                                if rate_limiter.check_rate_limit():
-                                    wait_time = rate_limiter.get_wait_time()
-                                    logger.warning(f"Rate limit reached. Waiting {wait_time:.0f} seconds before next request.")
-                                    time.sleep(wait_time)
-                                
-                                result_response = requests.get(result_url, headers=headers, timeout=30)
+                                result_response = make_request_with_retry(result_url, headers)
                                 if result_response.status_code == 200:
                                     full_result = result_response.json()
                                     result.update(full_result)
@@ -981,6 +1002,7 @@ class URLScanConnector:
                     print("\nNo results found")
                 
                 return results
+                
             except requests.exceptions.Timeout:
                 print("Request timed out after 30 seconds")
                 return []
