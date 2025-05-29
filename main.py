@@ -707,14 +707,15 @@ class URLScanConnector:
 
                     logger.info(f"Successfully processed result: {enrichment_result}")
                     
-                    # Ensure the response is JSON serializable
-                    response = {
+                    # Create a success message with all values as strings
+                    success_message = {
                         "status": "success",
-                        "message": str(f"Successfully enriched {opencti_entity['entity_type']} {opencti_entity['observable_value']}"),
-                        "data": str(enrichment_result) if enrichment_result else None
+                        "message": f"Successfully enriched {opencti_entity['entity_type']} {opencti_entity['observable_value']} with URLScan.io data",
+                        "data": str(enrichment_result) if enrichment_result else "No enrichment data"
                     }
                     
-                    return response
+                    logger.info(f"Returning success message: {json.dumps(success_message, indent=2)}")
+                    return success_message
 
                 except Exception as e:
                     error_msg = f"Error processing result: {str(e)}"
