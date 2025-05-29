@@ -476,12 +476,45 @@ class URLScanBuilder:
                         self.helper.api.stix_core_relationship.create(
                             fromId=self.stix_entity["id"],
                             toId=sector_obj["id"],
-                            relationship_type="related-to",  # Changed from 'targets' to 'related-to'
+                            relationship_type="related-to",
                             description=f"URL {self.opencti_entity['observable_value']} is related to sector {sector}"
                         )
                         self.helper.log_debug(f"[URLScan] Added relationship between URL and sector {sector}")
                     except Exception as e:
                         self.helper.log_error(f"[URLScan] Error creating sector relationship: {str(e)}")
+                
+                # Create organization if found in targeting info
+                if targeting_info['brands']:
+                    for brand in targeting_info['brands']:
+                        try:
+                            # Get or create organization
+                            org_obj = self.helper.api.identity.list(
+                                filters={
+                                    "mode": "and",
+                                    "filters": [{"key": "name", "values": [brand]}],
+                                    "filterGroups": []
+                                }
+                            )
+                            
+                            if not org_obj:
+                                org_obj = self.helper.api.identity.create(
+                                    type="Organization",
+                                    name=brand,
+                                    description=f"Organization targeted in phishing campaigns"
+                                )
+                            else:
+                                org_obj = org_obj[0]
+                            
+                            # Create relationship between URL and organization
+                            self.helper.api.stix_core_relationship.create(
+                                fromId=self.stix_entity["id"],
+                                toId=org_obj["id"],
+                                relationship_type="related-to",
+                                description=f"URL {self.opencti_entity['observable_value']} is related to organization {brand}"
+                            )
+                            self.helper.log_debug(f"[URLScan] Added relationship between URL and organization {brand}")
+                        except Exception as e:
+                            self.helper.log_error(f"[URLScan] Error creating organization relationship: {str(e)}")
                 
                 return "Successfully enriched observable"
             else:
