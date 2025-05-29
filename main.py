@@ -697,20 +697,24 @@ class URLScanConnector:
 
                     # Enrich the observable
                     if opencti_entity["entity_type"] == "Domain-Name":
-                        result = builder.create_indicator_based_on(
+                        enrichment_result = builder.create_indicator_based_on(
                             f"""[domain-name:value = '{opencti_entity["observable_value"]}']"""
                         )
                     else:  # Url
-                        result = builder.create_indicator_based_on(
+                        enrichment_result = builder.create_indicator_based_on(
                             f"""[url:value = '{opencti_entity["observable_value"]}']"""
                         )
 
-                    logger.info(f"Successfully processed result: {result}")
-                    return {
+                    logger.info(f"Successfully processed result: {enrichment_result}")
+                    
+                    # Ensure the response is JSON serializable
+                    response = {
                         "status": "success",
-                        "message": f"Successfully enriched {opencti_entity['entity_type']} {opencti_entity['observable_value']}",
-                        "data": result
+                        "message": str(f"Successfully enriched {opencti_entity['entity_type']} {opencti_entity['observable_value']}"),
+                        "data": str(enrichment_result) if enrichment_result else None
                     }
+                    
+                    return response
 
                 except Exception as e:
                     error_msg = f"Error processing result: {str(e)}"
@@ -718,7 +722,7 @@ class URLScanConnector:
                     logger.error(traceback.format_exc())
                     return {
                         "status": "error",
-                        "message": error_msg
+                        "message": str(error_msg)
                     }
             
         except Exception as e:
@@ -727,7 +731,7 @@ class URLScanConnector:
             logger.error(traceback.format_exc())
             return {
                 "status": "error",
-                "message": error_msg
+                "message": str(error_msg)
             }
 
     def get_label(self, label_value, color=None):
