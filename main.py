@@ -73,16 +73,7 @@ class URLScanConnector:
                 "confidence_level": int(os.getenv("CONFIDENCE_LEVEL", "60")),
                 "log_level": "info",
                 "auto": True,
-                "update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
-                "entity_types": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url").split(","),
-                "connector_type": "INTERNAL_ENRICHMENT",
-                "connector_scope": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
-                "connector_confidence_level": int(os.getenv("CONFIDENCE_LEVEL", "60")),
-                "connector_log_level": "info",
-                "connector_auto": True,
-                "connector_update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
-                "connector_entity_types": os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url").split(","),
-                "connector_workflow_id": "urlscan-workflow"
+                "update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "true").lower() == "true"
             }
         }
         
@@ -91,7 +82,7 @@ class URLScanConnector:
         
         # Get configuration values
         self.interval = int(os.getenv("INTERVAL", "300"))
-        self.update_existing_data = os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true"
+        self.update_existing_data = os.getenv("UPDATE_EXISTING_DATA", "true").lower() == "true"
         self.score = int(os.getenv("CONFIDENCE_LEVEL", "60"))
         self.update_frequency = int(os.getenv("UPDATE_FREQUENCY", "30"))
         
@@ -655,23 +646,33 @@ class URLScanConnector:
     def _process_message(self, data):
         """Process a message from OpenCTI."""
         try:
+            logger.info("Received message from OpenCTI")
+            logger.info(f"Message data: {json.dumps(data, indent=2)}")
+            
             # Get the observable ID from the message
             observable_id = data.get("entity_id")
             if not observable_id:
+                logger.error("No entity_id in message")
                 return
+            
+            logger.info(f"Processing observable with ID: {observable_id}")
             
             # Get the observable
             observable = self.helper.api.stix_cyber_observable.read(id=observable_id)
             if not observable:
+                logger.error(f"Could not find observable with id {observable_id}")
                 return
+            
+            logger.info(f"Found observable: {json.dumps(observable, indent=2)}")
             
             # Check if it's a domain or URL
             entity_type = observable.get("entity_type")
             if entity_type not in ["Domain-Name", "Url"]:
+                logger.error(f"Unsupported entity type: {entity_type}")
                 return
             
             value = observable.get("value")
-            print(f"\nProcessing {entity_type}: {value}")
+            logger.info(f"Processing {entity_type}: {value}")
             
             # Fetch data from URLScan.io
             if entity_type == "Domain-Name":
@@ -679,20 +680,26 @@ class URLScanConnector:
             else:  # Url
                 query = f"url:{value}"
             
+            logger.info(f"Fetching data from URLScan.io with query: {query}")
             data = self.fetch_urlscan_data(query)
             if not data:
-                print(f"No data found for {entity_type} {value}")
+                logger.info(f"No data found for {entity_type} {value}")
                 return
 
+            logger.info(f"Found {len(data)} results from URLScan.io")
+            
             # Create OpenCTI objects
-            print("\nProcessing results...")
-            output = self.create_opencti_objects(data, only_active)
-            print(f"Results pushed to OpenCTI for {entity_type} {value}")
+            logger.info("Processing results...")
+            output = self.create_opencti_objects(data, only_active=True)
+            logger.info(f"Results pushed to OpenCTI for {entity_type} {value}")
+            logger.info(f"Created {len(output['objects'])} objects")
+            logger.info(f"Created {len(output['relationships'])} relationships")
+            logger.info(f"Created {len(output['knowledge'])} knowledge entries")
             
         except Exception as e:
-            print(f"Error processing message: {str(e)}")
+            logger.error(f"Error processing message: {str(e)}")
             import traceback
-            print(traceback.format_exc())
+            logger.error(traceback.format_exc())
 
 def main():
     parser = argparse.ArgumentParser(description='URLScan.io OpenCTI Connector')
