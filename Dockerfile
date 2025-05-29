@@ -1,7 +1,8 @@
-FROM python:3.11.8-slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
     libmagic1 \
@@ -9,19 +10,15 @@ RUN apt-get update && apt-get install -y \
     && apt-get upgrade -y \
     && rm -rf /var/lib/apt/lists/*
 
+# Install dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
+# Copy connector code
 COPY . .
 
-RUN useradd -m -u 1000 appuser && \
-    chown -R appuser:appuser /app
-USER appuser
-
+# Set environment variables
 ENV PYTHONUNBUFFERED=1
-ENV DSHIELD_INTERVAL=300
-ENV DSHIELD_UPDATE_EXISTING_DATA=true
-ENV DSHIELD_CONFIDENCE_LEVEL=60
-ENV DSHIELD_UPDATE_FREQUENCY=300
 
+# Run the connector
 CMD ["python", "main.py"] 

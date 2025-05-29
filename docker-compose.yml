@@ -1,17 +1,27 @@
 version: '3'
 services:
-  dshield-connector:
-    image: ghcr.io/robinzor/opencti-dshield:main
-    container_name: connector-dshield
+  connector:
+    build: .
+    environment:
+      - OPENCTI_API_URL=http://opencti:8080
+      - OPENCTI_API_KEY=${OPENCTI_API_KEY}
+      - OPENCTI_VERIFY_SSL=false
+      - URLSCAN_CONFIDENCE_LEVEL=60
+      - URLSCAN_UPDATE_EXISTING_DATA=false
+      - URLSCAN_UPDATE_FREQUENCY=30
+    restart: always
+  urlscan-connector:
+    image: ghcr.io/robinzor/opencti-urlscan:main
+    container_name: connector-urlscan
     restart: unless-stopped
     environment:
       - OPENCTI_API_URL=${OPENCTI_API_URL}
       - OPENCTI_API_KEY=${OPENCTI_API_KEY}
       - OPENCTI_VERIFY_SSL=${OPENCTI_VERIFY_SSL:-false}
-      - DSHIELD_INTERVAL=${DSHIELD_INTERVAL:-300}
-      - DSHIELD_UPDATE_EXISTING_DATA=${DSHIELD_UPDATE_EXISTING_DATA:-true}
-      - DSHIELD_CONFIDENCE_LEVEL=${DSHIELD_CONFIDENCE_LEVEL:-60}
-      - DSHIELD_UPDATE_FREQUENCY=${DSHIELD_UPDATE_FREQUENCY:-300}
+      - URLSCAN_INTERVAL=${DSHIELD_INTERVAL:-300}
+      - URLSCAN_UPDATE_EXISTING_DATA=${DSHIELD_UPDATE_EXISTING_DATA:-true}
+      - URLSCAN_CONFIDENCE_LEVEL=${DSHIELD_CONFIDENCE_LEVEL:-60}
+      - URLSCAN_UPDATE_FREQUENCY=${DSHIELD_UPDATE_FREQUENCY:-300}
     logging:
       driver: "json-file"
       options:
