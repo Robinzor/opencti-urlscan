@@ -1,6 +1,6 @@
 import requests
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, List, Any
 import os
 import argparse
@@ -9,10 +9,22 @@ from dotenv import load_dotenv
 from pycti import OpenCTIConnectorHelper, get_config_variable
 import time
 import stix2
+from stix2 import Identity, Indicator, Note, Relationship
 import urllib3
 import re
 import yaml
 from pathlib import Path
+import uuid
+import pytz
+
+# Set timezone to Amsterdam
+amsterdam_tz = pytz.timezone('Europe/Amsterdam')
+os.environ['TZ'] = 'Europe/Amsterdam'
+if hasattr(time, 'tzset'):
+    time.tzset()
+
+# Configure logging with timezone
+logging.Formatter.converter = lambda *args: datetime.now(amsterdam_tz).timetuple()
 
 # Disable SSL warnings
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -100,8 +112,8 @@ class URLScanBuilder:
                 score = 80
             elif verdicts.get("community", {}).get("malicious"):
                 score = 60
-            elif verdicts.get("engines", {}):
-                malicious_count = sum(1 for v in verdicts["engines"].values() if v.get("malicious"))
+            elif self.attributes.get("engines", {}):
+                malicious_count = sum(1 for v in self.attributes["engines"].values() if v.get("malicious"))
                 if malicious_count > 0:
                     score = 40
         return score
@@ -113,58 +125,375 @@ class URLScanBuilder:
             "url": url,
             "description": description,
         }
-        OpenCTIStix2.put_attribute_in_extension(
-            self.stix_entity,
-            STIX_EXT_OCTI_SCO,
-            "external_references",
-            external_reference,
-            True,
-        )
         return external_reference
 
     def create_indicator_based_on(self, pattern: str):
-        """Create an Indicator if the score is high enough."""
-        if self.score >= 60:  # Only create indicator if score is high enough
-            self.helper.log_debug(f"[URLScan] creating indicator with pattern {pattern}")
-            indicator = stix2.Indicator(
-                id=Indicator.generate_id(pattern),
-                created_by_ref=self.author,
-                name=self.opencti_entity["observable_value"],
-                description="Created by URLScan.io connector based on malicious verdicts",
-                confidence=self.helper.connect_confidence_level,
-                pattern=pattern,
-                pattern_type="stix",
-                valid_until=self.helper.api.stix2.format_date(
-                    datetime.datetime.utcnow() + datetime.timedelta(days=30)
-                ),
-                external_references=[self.external_reference] if self.external_reference else None,
-                custom_properties={
-                    "x_opencti_main_observable_type": self.opencti_entity["entity_type"],
-                    "x_opencti_detection": True,
-                    "x_opencti_score": self.score,
-                },
-            )
-            relationship = stix2.Relationship(
-                id=StixCoreRelationship.generate_id(
-                    "based-on",
-                    indicator.id,
-                    self.stix_entity["id"],
-                ),
-                relationship_type="based-on",
-                created_by_ref=self.author,
-                source_ref=indicator.id,
-                target_ref=self.stix_entity["id"],
-                confidence=self.helper.connect_confidence_level,
-                allow_custom=True,
-            )
-            self.bundle += [indicator, relationship]
+        """Enrich the observable with URLScan.io data."""
+        if self.score >= 60:  # Only enrich if score is high enough
+            self.helper.log_debug(f"[URLScan] enriching observable with score {self.score}")
+            
+            # Create labels list
+            label_values = ["urlscan"]
+            if self.score >= 80:
+                label_values.extend(["malicious", "urlscan-malicious"])
+            
+            # Extract targeting information
+            targeting_info = {
+                'brands': [],
+                'categories': [],
+                'sectors': set()
+            }
+            
+            if "verdicts" in self.attributes and "urlscan" in self.attributes["verdicts"]:
+                urlscan = self.attributes["verdicts"]["urlscan"]
+                if isinstance(urlscan, dict):
+                    # Extract brands and sectors
+                    if "brands" in urlscan:
+                        for brand in urlscan["brands"]:
+                            if isinstance(brand, dict):
+                                brand_name = brand.get("name", "")
+                                if brand_name:
+                                    targeting_info['brands'].append(brand_name)
+                                    # Add brand as label
+                                    brand_label = brand_name.lower().replace(' ', '-')
+                                    label_values.append(brand_label)
+                                
+                                # Extract sectors from vertical
+                                if "vertical" in brand:
+                                    for sector in brand["vertical"]:
+                                        targeting_info['sectors'].add(sector)
+                                        # Add sector as label
+                                        sector_label = sector.lower().replace(' ', '-')
+                                        label_values.append(sector_label)
+                            elif isinstance(brand, str):
+                                targeting_info['brands'].append(brand)
+                                # Add brand as label
+                                brand_label = brand.lower().replace(' ', '-')
+                                label_values.append(brand_label)
+                    
+                    # Extract categories
+                    if "categories" in urlscan:
+                        for category in urlscan["categories"]:
+                            targeting_info['categories'].append(category)
+                            # Add category as label
+                            category_label = category.lower().replace(' ', '-')
+                            label_values.append(category_label)
+            
+            # Update existing entity with labels
+            try:
+                # Get existing labels
+                observable = self.helper.api.stix_cyber_observable.read(id=self.stix_entity["id"])
+                if observable:
+                    # Get existing label IDs
+                    existing_label_ids = [label["id"] for label in observable.get("objectLabel", [])]
+                    
+                    # Get or create new label IDs
+                    new_label_ids = []
+                    for label_value in label_values:
+                        try:
+                            # Check if label exists
+                            labels = self.helper.api.label.list(search=label_value)
+                            label_id = None
+                            
+                            # Find exact match
+                            for label in labels:
+                                if label["value"].lower() == label_value.lower():
+                                    label_id = label["id"]
+                                    break
+                            
+                            # Create label if it doesn't exist
+                            if not label_id:
+                                # Set color based on label type
+                                color = None
+                                if label_value in ["urlscan-malicious", "malicious"]:
+                                    color = "#ff0000"  # Red for malicious
+                                elif label_value in targeting_info['brands']:
+                                    color = "#00ff00"  # Green for brands
+                                elif label_value in targeting_info['sectors']:
+                                    color = "#ffff00"  # Yellow for sectors
+                                elif label_value in targeting_info['categories']:
+                                    color = "#ff0000"  # Red for categories
+                                
+                                new_label = self.helper.api.label.create(
+                                    value=label_value,
+                                    color=color
+                                )
+                                label_id = new_label["id"]
+                            
+                            new_label_ids.append(label_id)
+                        except Exception as e:
+                            self.helper.log_error(f"[URLScan] Error getting/creating label {label_value}: {str(e)}")
+                    
+                    # Combine existing and new label IDs
+                    all_label_ids = list(set(existing_label_ids + new_label_ids))
+                    
+                    # Update observable with new labels one by one
+                    for label_id in all_label_ids:
+                        try:
+                            self.helper.api.stix_cyber_observable.add_label(
+                                id=self.stix_entity["id"],
+                                label_id=label_id
+                            )
+                            self.helper.log_debug(f"[URLScan] Added label {label_id} to entity {self.stix_entity['id']}")
+                        except Exception as e:
+                            self.helper.log_error(f"[URLScan] Error adding label {label_id}: {str(e)}")
+                    
+                    self.helper.log_debug(f"[URLScan] Updated entity {self.stix_entity['id']} with labels: {label_values}")
+                else:
+                    self.helper.log_error(f"[URLScan] Could not find observable with ID {self.stix_entity['id']}")
+                    return "Could not find observable to enrich"
+            except Exception as e:
+                self.helper.log_error(f"[URLScan] Error updating entity labels: {str(e)}")
+                return f"Error updating labels: {str(e)}"
+            
+            # Create note with analysis results
+            if "verdicts" in self.attributes:
+                content = "# URLScan.io Analysis Results\n\n"
+                
+                # Add scan information
+                if "task" in self.attributes:
+                    task = self.attributes["task"]
+                    content += f"**Scan Time:** {task.get('time', 'N/A')}\n"
+                    content += f"**Scan Method:** {task.get('method', 'N/A')}\n"
+                    content += f"**Scan Visibility:** {task.get('visibility', 'N/A')}\n\n"
+                
+                # Add targeting information if available
+                if targeting_info['brands'] or targeting_info['categories'] or targeting_info['sectors']:
+                    content += "## Targeting Information\n\n"
+                    if targeting_info['brands']:
+                        content += f"**Targeted Brands:** {', '.join(targeting_info['brands'])}\n\n"
+                    if targeting_info['categories']:
+                        content += f"**Categories:** {', '.join(targeting_info['categories'])}\n\n"
+                    if targeting_info['sectors']:
+                        content += f"**Targeted Sectors:** {', '.join(targeting_info['sectors'])}\n\n"
+                
+                # Add page information if available
+                if "page" in self.attributes:
+                    page = self.attributes["page"]
+                    content += "## Page Information\n\n"
+                    content += f"**Title:** {page.get('title', 'N/A')}\n"
+                    content += f"**MIME Type:** {page.get('mimeType', 'N/A')}\n"
+                    content += f"**Country:** {page.get('country', 'N/A')}\n"
+                    content += f"**IP:** {page.get('ip', 'N/A')}\n"
+                    content += f"**ASN:** {page.get('asn', 'N/A')} ({page.get('asnname', 'N/A')})\n"
+                    content += f"**TLS Valid Days:** {page.get('tlsValidDays', 'N/A')}\n"
+                    content += f"**TLS Issuer:** {page.get('tlsIssuer', 'N/A')}\n"
+                    content += f"**Domain:** {page.get('domain', 'N/A')}\n"
+                    content += f"**Apex Domain:** {page.get('apexDomain', 'N/A')}\n"
+                    content += f"**Status Code:** {page.get('status', 'N/A')}\n"
+                    content += f"**Redirected:** {page.get('redirected', 'N/A')}\n\n"
+                
+                content += "## Verdict Results\n\n"
+                content += "| Category | Result |\n"
+                content += "|----------|--------|\n"
+                
+                verdicts = self.attributes["verdicts"]
+                if "overall" in verdicts:
+                    overall = verdicts["overall"]
+                    if isinstance(overall, dict):
+                        content += f"| Overall | {'Malicious' if overall.get('malicious') else 'Clean'} |\n"
+                    else:
+                        content += f"| Overall | {overall} |\n"
+                        
+                if "urlscan" in verdicts:
+                    urlscan = verdicts["urlscan"]
+                    if isinstance(urlscan, dict):
+                        content += f"| URLScan | {'Malicious' if urlscan.get('malicious') else 'Clean'} |\n"
+                    else:
+                        content += f"| URLScan | {urlscan} |\n"
+                        
+                if "community" in verdicts:
+                    community = verdicts["community"]
+                    if isinstance(community, dict):
+                        content += f"| Community | {'Malicious' if community.get('malicious') else 'Clean'} |\n"
+                    else:
+                        content += f"| Community | {community} |\n"
+                
+                if "engines" in verdicts:
+                    content += "\n## Engine Results\n\n"
+                    content += "| Engine | Result |\n"
+                    content += "|--------|--------|\n"
+                    for engine, result in verdicts["engines"].items():
+                        if isinstance(result, dict):
+                            content += f"| {engine} | {'Malicious' if result.get('malicious') else 'Clean'} |\n"
+                        else:
+                            content += f"| {engine} | {result} |\n"
+                
+                # Add note to existing entity
+                try:
+                    # Create external reference first if available
+                    ext_ref_id = None
+                    if self.external_reference:
+                        try:
+                            ext_ref = self.helper.api.external_reference.create(
+                                source_name=self.external_reference["source_name"],
+                                url=self.external_reference["url"],
+                                description=self.external_reference.get("description", "")
+                            )
+                            ext_ref_id = ext_ref["id"]
+                            self.helper.log_debug(f"[URLScan] Created external reference {ext_ref_id}")
+                        except Exception as e:
+                            self.helper.log_error(f"[URLScan] Error creating external reference: {str(e)}")
+                    
+                    # Create note with external reference if available
+                    self.helper.log_debug(f"[URLScan] Creating note for entity {self.stix_entity['id']}")
+                    self.helper.log_debug(f"[URLScan] Note content: {content}")
+                    
+                    note = self.helper.api.note.create(
+                        content=content,
+                        createdBy=self.author["id"],
+                        objectId=self.stix_entity["id"],
+                        attribute_abstract="URLScan.io Analysis Results",
+                        externalReferences=[ext_ref_id] if ext_ref_id else [],
+                        objectMarking=[stix2.TLP_WHITE["id"]]
+                    )
+                    
+                    if note:
+                        self.helper.log_debug(f"[URLScan] Successfully created note with ID: {note['id']}")
+                        # Verify note was created
+                        try:
+                            created_note = self.helper.api.note.read(id=note["id"])
+                            if created_note:
+                                self.helper.log_debug(f"[URLScan] Verified note exists: {created_note['id']}")
+                            else:
+                                self.helper.log_error("[URLScan] Note was not found after creation")
+                        except Exception as e:
+                            self.helper.log_error(f"[URLScan] Error verifying note: {str(e)}")
+                    else:
+                        self.helper.log_error("[URLScan] Note creation returned no result")
+                except Exception as e:
+                    self.helper.log_error(f"[URLScan] Error adding note to entity: {str(e)}")
+                    self.helper.log_error(f"[URLScan] Full error details: {traceback.format_exc()}")
+                
+                # Add external reference to observable if available
+                if self.external_reference:
+                    try:
+                        # Create external reference first
+                        ext_ref = self.helper.api.external_reference.create(
+                            source_name=self.external_reference["source_name"],
+                            url=self.external_reference["url"],
+                            description=self.external_reference.get("description", "")
+                        )
+                        # Then add it to the observable
+                        self.helper.api.stix_cyber_observable.add_external_reference(
+                            id=self.stix_entity["id"],
+                            external_reference_id=ext_ref["id"]
+                        )
+                        self.helper.log_debug(f"[URLScan] Added external reference to entity {self.stix_entity['id']}")
+                    except Exception as e:
+                        self.helper.log_error(f"[URLScan] Error adding external reference: {str(e)}")
+                
+                # Add relationships for domain and IP if available
+                if "page" in self.attributes:
+                    page = self.attributes["page"]
+                    
+                    # Add domain relationship
+                    if "domain" in page:
+                        domain = page["domain"]
+                        try:
+                            # Create or get domain observable
+                            domain_obs = self.helper.api.stix_cyber_observable.create(
+                                simple_observable_key="Domain-Name.value",
+                                simple_observable_value=domain,
+                                objectLabel=label_values
+                            )
+                            
+                            # Wait a moment for the observable to be fully created
+                            time.sleep(1)
+                            
+                            # Verify both observables exist before creating relationship
+                            source_obs = self.helper.api.stix_cyber_observable.read(id=self.stix_entity["id"])
+                            target_obs = self.helper.api.stix_cyber_observable.read(id=domain_obs["id"])
+                            
+                            if source_obs and target_obs and source_obs["id"] != target_obs["id"]:
+                                # Create relationship between URL and domain
+                                self.helper.api.stix_core_relationship.create(
+                                    fromId=source_obs["id"],
+                                    toId=target_obs["id"],
+                                    relationship_type="related-to",
+                                    description=f"URL {self.opencti_entity['observable_value']} is related to domain {domain}"
+                                )
+                                self.helper.log_debug(f"[URLScan] Added relationship between URL and domain {domain}")
+                            else:
+                                self.helper.log_error("[URLScan] Could not verify both observables exist for relationship or they are the same")
+                        except Exception as e:
+                            self.helper.log_error(f"[URLScan] Error creating domain relationship: {str(e)}")
+                    
+                    # Add IP relationship
+                    if "ip" in page:
+                        ip = page["ip"]
+                        try:
+                            # Create or get IP observable
+                            ip_obs = self.helper.api.stix_cyber_observable.create(
+                                simple_observable_key="IPv4-Addr.value",
+                                simple_observable_value=ip,
+                                objectLabel=label_values
+                            )
+                            
+                            # Wait a moment for the observable to be fully created
+                            time.sleep(1)
+                            
+                            # Verify both observables exist before creating relationship
+                            source_obs = self.helper.api.stix_cyber_observable.read(id=self.stix_entity["id"])
+                            target_obs = self.helper.api.stix_cyber_observable.read(id=ip_obs["id"])
+                            
+                            if source_obs and target_obs and source_obs["id"] != target_obs["id"]:
+                                # Create relationship between URL and IP
+                                self.helper.api.stix_core_relationship.create(
+                                    fromId=source_obs["id"],
+                                    toId=target_obs["id"],
+                                    relationship_type="related-to",
+                                    description=f"URL {self.opencti_entity['observable_value']} is related to IP {ip}"
+                                )
+                                self.helper.log_debug(f"[URLScan] Added relationship between URL and IP {ip}")
+                            else:
+                                self.helper.log_error("[URLScan] Could not verify both observables exist for relationship or they are the same")
+                        except Exception as e:
+                            self.helper.log_error(f"[URLScan] Error creating IP relationship: {str(e)}")
+                
+                # Create relationships with sectors
+                for sector in targeting_info['sectors']:
+                    try:
+                        # Get or create sector
+                        sector_obj = self.helper.api.identity.list(
+                            filters={
+                                "mode": "and",
+                                "filters": [{"key": "name", "values": [sector]}],
+                                "filterGroups": []
+                            }
+                        )
+                        
+                        if not sector_obj:
+                            sector_obj = self.helper.api.identity.create(
+                                type="Sector",
+                                name=sector,
+                                description=f"Sector targeted in phishing campaigns"
+                            )
+                        else:
+                            sector_obj = sector_obj[0]
+                        
+                        # Create relationship between URL and sector
+                        self.helper.api.stix_core_relationship.create(
+                            fromId=self.stix_entity["id"],
+                            toId=sector_obj["id"],
+                            relationship_type="related-to",  # Changed from 'targets' to 'related-to'
+                            description=f"URL {self.opencti_entity['observable_value']} is related to sector {sector}"
+                        )
+                        self.helper.log_debug(f"[URLScan] Added relationship between URL and sector {sector}")
+                    except Exception as e:
+                        self.helper.log_error(f"[URLScan] Error creating sector relationship: {str(e)}")
+                
+                return "Successfully enriched observable"
+            else:
+                return "No verdicts found to enrich observable"
+        return "Score too low to enrich observable"
 
     def create_note(self, abstract: str, content: str):
         """Create a Note with the given abstract and content."""
         self.helper.log_debug(f"[URLScan] creating note with abstract {abstract}")
         self.bundle.append(
             stix2.Note(
-                id=Note.generate_id(datetime.datetime.now().isoformat(), content),
+                id=f"note--{uuid.uuid4()}",
                 abstract=abstract,
                 content=content,
                 created_by_ref=self.author,
@@ -181,18 +510,35 @@ class URLScanBuilder:
             
             verdicts = self.attributes["verdicts"]
             if "overall" in verdicts:
-                content += f"| Overall | {'Malicious' if verdicts['overall'].get('malicious') else 'Clean'} |\n"
+                overall = verdicts["overall"]
+                if isinstance(overall, dict):
+                    content += f"| Overall | {'Malicious' if overall.get('malicious') else 'Clean'} |\n"
+                else:
+                    content += f"| Overall | {overall} |\n"
+                    
             if "urlscan" in verdicts:
-                content += f"| URLScan | {'Malicious' if verdicts['urlscan'].get('malicious') else 'Clean'} |\n"
+                urlscan = verdicts["urlscan"]
+                if isinstance(urlscan, dict):
+                    content += f"| URLScan | {'Malicious' if urlscan.get('malicious') else 'Clean'} |\n"
+                else:
+                    content += f"| URLScan | {urlscan} |\n"
+                    
             if "community" in verdicts:
-                content += f"| Community | {'Malicious' if verdicts['community'].get('malicious') else 'Clean'} |\n"
+                community = verdicts["community"]
+                if isinstance(community, dict):
+                    content += f"| Community | {'Malicious' if community.get('malicious') else 'Clean'} |\n"
+                else:
+                    content += f"| Community | {community} |\n"
             
             if "engines" in verdicts:
                 content += "\n## Engine Results\n\n"
                 content += "| Engine | Result |\n"
                 content += "|--------|--------|\n"
                 for engine, result in verdicts["engines"].items():
-                    content += f"| {engine} | {'Malicious' if result.get('malicious') else 'Clean'} |\n"
+                    if isinstance(result, dict):
+                        content += f"| {engine} | {'Malicious' if result.get('malicious') else 'Clean'} |\n"
+                    else:
+                        content += f"| {engine} | {result} |\n"
             
             self.create_note("URLScan.io Results", content)
 
@@ -202,9 +548,30 @@ class URLScanBuilder:
         if self.bundle is not None:
             self.helper.log_debug(f"[URLScan] sending bundle: {self.bundle}")
             self.helper.metric.inc("record_send", len(self.bundle))
-            serialized_bundle = self.helper.stix2_create_bundle(self.bundle)
-            bundles_sent = self.helper.send_stix2_bundle(serialized_bundle)
-            return f"Sent {len(bundles_sent)} stix bundle(s) for worker import"
+            
+            # Create a STIX bundle with custom content allowed
+            bundle = stix2.Bundle(objects=self.bundle, allow_custom=True)
+            
+            # Serialize the bundle
+            serialized_bundle = bundle.serialize()
+            
+            # In test mode, use direct API call instead of RabbitMQ
+            if hasattr(self.helper, 'test_mode') and self.helper.test_mode:
+                print("\nSending bundle directly to OpenCTI API...")
+                try:
+                    # Parse the serialized bundle back into a dictionary
+                    bundle_dict = json.loads(serialized_bundle)
+                    # Use the OpenCTI API to import the bundle
+                    self.helper.api.stix2.import_bundle(bundle_dict)
+                    print("Bundle successfully imported")
+                    return f"Sent {len(self.bundle)} stix bundle(s) for worker import"
+                except Exception as e:
+                    print(f"Error importing bundle: {str(e)}")
+                    raise
+            else:
+                # Normal mode - use RabbitMQ
+                self.helper.send_stix2_bundle(serialized_bundle)
+                return f"Sent {len(self.bundle)} stix bundle(s) for worker import"
         return "Nothing to attach"
 
 class URLScanConnector:
@@ -215,7 +582,8 @@ class URLScanConnector:
             "opencti": {
                 "url": os.getenv("OPENCTI_API_URL", "http://opencti:8080"),
                 "token": os.getenv("OPENCTI_API_KEY", "your-api-key"),
-                "verify_ssl": os.getenv("OPENCTI_VERIFY_SSL", "false").lower() == "true"
+                "verify_ssl": os.getenv("OPENCTI_VERIFY_SSL", "false").lower() == "true",
+                "timezone": "Europe/Amsterdam"
             },
             "connector": {
                 "id": "urlscan-connector",
@@ -239,7 +607,6 @@ class URLScanConnector:
         
         # Create organization
         self.author = stix2.Identity(
-            id=Identity.generate_id("URLScan.io", "organization"),
             name="URLScan.io",
             identity_class="organization",
             description="URLScan.io search results importer",
@@ -252,9 +619,20 @@ class URLScanConnector:
             self.helper.metric.inc("run_count")
             self.helper.metric.state("running")
             
-            stix_objects = data["stix_objects"]
-            stix_entity = data["stix_entity"]
-            opencti_entity = data["enrichment_entity"]
+            logger.info("Received message from OpenCTI")
+            logger.info(f"Message data: {json.dumps(data, indent=2)}")
+            
+            stix_objects = data.get("stix_objects", [])
+            stix_entity = data.get("stix_entity", {})
+            opencti_entity = data.get("enrichment_entity", {})
+
+            if not stix_entity or not opencti_entity:
+                error_msg = "Missing required data in message"
+                logger.error(error_msg)
+                return {
+                    "status": "error",
+                    "message": error_msg
+                }
 
             # Extract TLP
             tlp = "TLP:CLEAR"
@@ -263,14 +641,15 @@ class URLScanConnector:
                     tlp = marking_definition["definition"]
 
             if not OpenCTIConnectorHelper.check_max_tlp(tlp, "TLP:AMBER"):
-                raise ValueError(
-                    "Do not send any data, TLP of the observable is greater than MAX TLP"
-                )
+                error_msg = "Do not send any data, TLP of the observable is greater than MAX TLP"
+                logger.error(error_msg)
+                return {
+                    "status": "error",
+                    "message": error_msg
+                }
 
-            self.helper.log_debug(
-                "[URLScan] starting enrichment of observable: {"
-                + opencti_entity["observable_value"]
-                + "}"
+            logger.info(
+                f"[URLScan] Starting enrichment of observable: {opencti_entity.get('observable_value', 'unknown')}"
             )
             
             # Fetch data from URLScan.io
@@ -282,11 +661,14 @@ class URLScanConnector:
             logger.info(f"Fetching data from URLScan.io with query: {query}")
             data = self.fetch_urlscan_data(query)
             if not data:
-                logger.info(f"No data found for {opencti_entity['entity_type']} {opencti_entity['observable_value']}")
+                error_msg = f"No data found for {opencti_entity['entity_type']} {opencti_entity['observable_value']}"
+                logger.info(error_msg)
                 return {
                     "status": "error",
-                    "message": f"No data found for {opencti_entity['entity_type']} {opencti_entity['observable_value']}"
+                    "message": error_msg
                 }
+
+            logger.info(f"Found {len(data)} results from URLScan.io")
 
             # Process each result
             for result in data:
@@ -295,38 +677,51 @@ class URLScanConnector:
                     logger.info(f"Skipping URL with status {result.get('page', {}).get('status')} as only_active_urls is enabled")
                     continue
 
-                builder = URLScanBuilder(
-                    self.helper,
-                    self.author,
-                    stix_objects,
-                    stix_entity,
-                    opencti_entity,
-                    result,
-                )
+                logger.info(f"Processing result: {json.dumps(result, indent=2)}")
 
-                # Create indicator if malicious
-                if opencti_entity["entity_type"] == "Domain-Name":
-                    builder.create_indicator_based_on(
-                        f"""[domain-name:value = '{opencti_entity["observable_value"]}']"""
-                    )
-                else:  # Url
-                    builder.create_indicator_based_on(
-                        f"""[url:value = '{opencti_entity["observable_value"]}']"""
+                try:
+                    builder = URLScanBuilder(
+                        self.helper,
+                        self.author,
+                        stix_objects,
+                        stix_entity,
+                        opencti_entity,
+                        result,
                     )
 
-                # Create notes with analysis results
-                builder.create_notes()
+                    # Enrich the observable
+                    if opencti_entity["entity_type"] == "Domain-Name":
+                        result = builder.create_indicator_based_on(
+                            f"""[domain-name:value = '{opencti_entity["observable_value"]}']"""
+                        )
+                    else:  # Url
+                        result = builder.create_indicator_based_on(
+                            f"""[url:value = '{opencti_entity["observable_value"]}']"""
+                        )
 
-                # Send the bundle
-                return builder.send_bundle()
+                    logger.info(f"Successfully processed result: {result}")
+                    return {
+                        "status": "success",
+                        "message": f"Successfully enriched {opencti_entity['entity_type']} {opencti_entity['observable_value']}",
+                        "data": result
+                    }
+
+                except Exception as e:
+                    error_msg = f"Error processing result: {str(e)}"
+                    logger.error(error_msg)
+                    logger.error(traceback.format_exc())
+                    return {
+                        "status": "error",
+                        "message": error_msg
+                    }
             
         except Exception as e:
-            logger.error(f"Error processing message: {str(e)}")
-            import traceback
+            error_msg = f"Error processing message: {str(e)}"
+            logger.error(error_msg)
             logger.error(traceback.format_exc())
             return {
                 "status": "error",
-                "message": str(e)
+                "message": error_msg
             }
 
     def get_label(self, label_value, color=None):
@@ -619,7 +1014,6 @@ class URLScanConnector:
                                     # Add brand as label with green color
                                     brand_label = brand_name.lower().replace(' ', '-')
                                     entry_labels.append(brand_label)
-                                    self.get_label(brand_label, color="#00ff00")  # Green
                                 
                                 # Extract sectors from vertical
                                 if 'vertical' in brand:
@@ -628,13 +1022,11 @@ class URLScanConnector:
                                         # Add sector as label with yellow color
                                         sector_label = sector.lower().replace(' ', '-')
                                         entry_labels.append(sector_label)
-                                        self.get_label(sector_label, color="#ffff00")  # Yellow
                             elif isinstance(brand, str):
                                 targeting_info['brands'].append(brand)
                                 # Add brand as label with green color
                                 brand_label = brand.lower().replace(' ', '-')
                                 entry_labels.append(brand_label)
-                                self.get_label(brand_label, color="#00ff00")  # Green
                     
                     if 'categories' in urlscan:
                         for category in urlscan['categories']:
@@ -642,7 +1034,6 @@ class URLScanConnector:
                             # Add category as label with red color
                             category_label = category.lower().replace(' ', '-')
                             entry_labels.append(category_label)
-                            self.get_label(category_label, color="#ff0000")  # Red
                 
                 # Check community verdict
                 community = verdicts.get('community', {})
@@ -866,16 +1257,110 @@ class URLScanConnector:
             import traceback
             print(traceback.format_exc())
 
+def generate_stix_id(type: str, value: str) -> str:
+    """Generate a valid STIX ID with UUID."""
+    return f"{type}--{uuid.uuid4()}"
+
 def main():
     parser = argparse.ArgumentParser(description='URLScan.io OpenCTI Connector')
     parser.add_argument('-d', '--debug', action='store_true', help='Enable debug logging')
     parser.add_argument('-a', '--active-only', action='store_true', help='Only process URLs with status code 200')
-    parser.add_argument('domain', nargs='?', default=None, help='Domain to search for in URLScan.io (if not provided, will use all domains from OpenCTI)')
+    parser.add_argument('-t', '--test', action='store_true', help='Test mode - simulate OpenCTI enrichment task')
+    parser.add_argument('domain', nargs='?', default=None, help='Domain to search for in URLScan.io')
     args = parser.parse_args()
 
     if args.debug:
         logger.setLevel(logging.DEBUG)
 
+    if args.test:
+        if not args.domain:
+            print("Error: Domain is required in test mode")
+            parser.print_help()
+            return
+
+        print(f"\n=== Testing URLScan.io connector with domain: {args.domain} ===")
+        try:
+            print("Initializing connector...")
+            connector = URLScanConnector()
+            # Set test mode flag
+            connector.helper.test_mode = True
+            print("Connector initialized successfully")
+            
+            # Create domain observable first
+            print(f"Creating domain observable for {args.domain}...")
+            domain_obs = connector.helper.api.stix_cyber_observable.create(
+                simple_observable_key="Domain-Name.value",
+                simple_observable_value=args.domain,
+                objectLabel=["urlscan"]
+            )
+            print(f"Created domain observable with ID: {domain_obs['id']}")
+            
+            # Create a simulated OpenCTI message
+            print("Creating test message...")
+            test_message = {
+                "stix_objects": [],
+                "stix_entity": {
+                    "id": domain_obs["id"],  # Use the actual ID from the created observable
+                    "type": "domain-name",
+                    "value": args.domain
+                },
+                "enrichment_entity": {
+                    "id": domain_obs["id"],  # Use the actual ID from the created observable
+                    "type": "Domain-Name",
+                    "entity_type": "Domain-Name",
+                    "observable_value": args.domain,
+                    "objectMarking": [
+                        {
+                            "definition_type": "TLP",
+                            "definition": "TLP:WHITE"
+                        }
+                    ]
+                }
+            }
+            
+            print("\nSimulating OpenCTI enrichment task...")
+            print(f"Message structure: {json.dumps(test_message, indent=2)}")
+            
+            print("\nFetching data from URLScan.io...")
+            results = connector.fetch_urlscan_data(f"domain:{args.domain}")
+            if not results:
+                print(f"No results found for domain: {args.domain}")
+                return
+                
+            print(f"Found {len(results)} results from URLScan.io")
+            
+            print("\nProcessing results...")
+            for result in results:
+                print(f"\nProcessing result: {result.get('page', {}).get('url', 'N/A')}")
+                if args.active_only and result.get('page', {}).get('status') != 200:
+                    print("Skipping - not active URL")
+                    continue
+                    
+                print("Creating builder...")
+                builder = URLScanBuilder(
+                    connector.helper,
+                    connector.author,
+                    test_message["stix_objects"],
+                    test_message["stix_entity"],
+                    test_message["enrichment_entity"],
+                    result,
+                )
+                
+                print("Enriching observable...")
+                result = builder.create_indicator_based_on(
+                    f"""[domain-name:value = '{args.domain}']"""
+                )
+                print(f"Enrichment result: {result}")
+                
+            print("\n=== Test completed successfully ===")
+            
+        except Exception as e:
+            print(f"\nError during test: {str(e)}")
+            import traceback
+            print(traceback.format_exc())
+        return
+
+    # Normal mode - start the connector
     connector = URLScanConnector()
     connector.run(query=args.domain, only_active=args.active_only)
 
