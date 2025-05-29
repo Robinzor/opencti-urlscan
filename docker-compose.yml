@@ -1,16 +1,5 @@
 version: '3'
 services:
-  connector:
-    build: .
-    environment:
-      - OPENCTI_API_URL=http://opencti:8080
-      - OPENCTI_API_KEY=${OPENCTI_API_KEY}
-      - OPENCTI_VERIFY_SSL=false
-      - CONFIDENCE_LEVEL=60
-      - UPDATE_EXISTING_DATA=false
-      - UPDATE_FREQUENCY=30
-      - CONNECTOR_SCOPE=Domain-Name,Url
-    restart: always
   urlscan-connector:
     image: ghcr.io/robinzor/opencti-urlscan:main
     container_name: connector-urlscan
