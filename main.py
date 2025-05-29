@@ -1245,7 +1245,6 @@ class URLScanConnector:
         try:
             print(f"\nStarting URLScan.io enrichment")
             print(f"Only active URLs: {'enabled' if only_active else 'disabled'}")
-            print(f"Update frequency: {self.update_frequency} seconds")
             
             # Start the connector
             self.helper.listen(self._process_message)
