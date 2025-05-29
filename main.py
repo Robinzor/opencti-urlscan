@@ -90,8 +90,8 @@ class URLScanBuilder:
         self.attributes = data["attributes"] if "attributes" in data else data
         self.score = self._compute_score()
 
-        # Add the external reference
-        if "result" in data:
+        # Add the external reference only if not skipped
+        if not data.get('_skip_external_reference', False) and "result" in data:
             link = f"https://urlscan.io/result/{data['_id']}/"
             self.helper.log_debug(f"[URLScan] adding external reference {link}")
             self.external_reference = self._create_external_reference(
@@ -391,6 +391,11 @@ class URLScanBuilder:
                     if "domain" in page:
                         domain = page["domain"]
                         try:
+                            # Skip if domain is the same as the observable value
+                            if domain == self.opencti_entity["observable_value"]:
+                                self.helper.log_debug(f"[URLScan] Skipping domain relationship - domain is the same as observable value")
+                                return "Successfully enriched observable (skipped domain relationship - same as observable value)"
+                                
                             # Create or get domain observable
                             domain_obs = self.helper.api.stix_cyber_observable.create(
                                 simple_observable_key="Domain-Name.value",
@@ -414,10 +419,13 @@ class URLScanBuilder:
                                     description=f"URL {self.opencti_entity['observable_value']} is related to domain {domain}"
                                 )
                                 self.helper.log_debug(f"[URLScan] Added relationship between URL and domain {domain}")
+                                return "Successfully enriched observable with domain relationship"
                             else:
-                                self.helper.log_error("[URLScan] Could not verify both observables exist for relationship or they are the same")
+                                self.helper.log_debug(f"[URLScan] Skipping domain relationship - observables are the same or not found")
+                                return "Successfully enriched observable (skipped domain relationship - observables are the same or not found)"
                         except Exception as e:
                             self.helper.log_error(f"[URLScan] Error creating domain relationship: {str(e)}")
+                            return f"Error creating domain relationship: {str(e)}"
                     
                     # Add IP relationship
                     if "ip" in page:
@@ -601,7 +609,7 @@ class URLScanConnector:
         print("Connector initialized successfully")
         
         # Get configuration values
-        self.only_active_urls = os.getenv("ONLY_ACTIVE_URLS", "true").lower() == "true"
+        self.only_active_urls = os.getenv("ONLY_ACTIVE_URLS", "false").lower() == "true"
         self.update_existing_data = os.getenv("UPDATE_EXISTING_DATA", "true").lower() == "true"
         self.confidence_level = int(os.getenv("CONFIDENCE_LEVEL", "60"))
         
@@ -670,16 +678,22 @@ class URLScanConnector:
 
             logger.info(f"Found {len(data)} results from URLScan.io")
 
+            # Find the last active URL for external reference
+            last_active_url = None
+            for entry in reversed(data):
+                if 'page' in entry and entry['page'].get('status') == 200:
+                    last_active_url = entry
+                    break
+
             # Process each result
             for result in data:
-                # Skip non-active URLs if only_active_urls is True
-                if self.only_active_urls and result.get('page', {}).get('status') != 200:
-                    logger.info(f"Skipping URL with status {result.get('page', {}).get('status')} as only_active_urls is enabled")
-                    continue
-
                 logger.info(f"Processing result: {json.dumps(result, indent=2)}")
 
                 try:
+                    # Only create external reference for the last active URL
+                    if result != last_active_url:
+                        result['_skip_external_reference'] = True
+
                     builder = URLScanBuilder(
                         self.helper,
                         self.author,
