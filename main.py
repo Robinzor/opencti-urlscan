@@ -70,17 +70,17 @@ class URLScanConnector:
                 "type": "INTERNAL_ENRICHMENT",
                 "name": "URLScan.io Connector",
                 "scope": "urlscan",
-                "confidence_level": int(os.getenv("URLSCAN_CONFIDENCE_LEVEL", "60")),
+                "confidence_level": int(os.getenv("CONFIDENCE_LEVEL", "60")),
                 "log_level": "info",
                 "auto": True,
-                "update_existing_data": os.getenv("URLSCAN_UPDATE_EXISTING_DATA", "false").lower() == "true",
+                "update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
                 "entity_types": ["Domain-Name", "Url"],
                 "connector_type": "INTERNAL_ENRICHMENT",
                 "connector_scope": "urlscan",
-                "connector_confidence_level": int(os.getenv("URLSCAN_CONFIDENCE_LEVEL", "60")),
+                "connector_confidence_level": int(os.getenv("CONFIDENCE_LEVEL", "60")),
                 "connector_log_level": "info",
                 "connector_auto": True,
-                "connector_update_existing_data": os.getenv("URLSCAN_UPDATE_EXISTING_DATA", "false").lower() == "true",
+                "connector_update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
                 "connector_entity_types": ["Domain-Name", "Url"]
             }
         }
@@ -180,10 +180,10 @@ class URLScanConnector:
         print("Connector initialized successfully")
         
         # Get configuration values
-        self.interval = int(os.getenv("URLSCAN_INTERVAL", "300"))
-        self.update_existing_data = os.getenv("URLSCAN_UPDATE_EXISTING_DATA", "false").lower() == "true"
-        self.score = int(os.getenv("URLSCAN_CONFIDENCE_LEVEL", "60"))
-        self.update_frequency = int(os.getenv("URLSCAN_UPDATE_FREQUENCY", "30"))
+        self.interval = int(os.getenv("INTERVAL", "300"))
+        self.update_existing_data = os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true"
+        self.score = int(os.getenv("CONFIDENCE_LEVEL", "60"))
+        self.update_frequency = int(os.getenv("UPDATE_FREQUENCY", "30"))
         
         # Create organization only if not in test mode
         if not os.getenv("TEST_MODE"):
