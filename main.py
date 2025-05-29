@@ -847,19 +847,6 @@ class URLScanConnector:
             print(f"Only active URLs: {'enabled' if only_active else 'disabled'}")
             print(f"Update frequency: {self.update_frequency} seconds")
             
-            # Register the connector
-            self.helper.api.connector.register(
-                connector_id="urlscan-connector",
-                name="URLScan.io Connector",
-                type="INTERNAL_ENRICHMENT",
-                scope=os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url"),
-                confidence_level=int(os.getenv("CONFIDENCE_LEVEL", "60")),
-                log_level="info",
-                auto=True,
-                update_existing_data=os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
-                entity_types=os.getenv("CONNECTOR_SCOPE", "Domain-Name,Url").split(",")
-            )
-            
             # Start the connector
             self.helper.listen(self._process_message)
             
