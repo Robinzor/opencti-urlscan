@@ -81,7 +81,9 @@ class URLScanConnector:
                 "connector_log_level": "info",
                 "connector_auto": True,
                 "connector_update_existing_data": os.getenv("UPDATE_EXISTING_DATA", "false").lower() == "true",
-                "connector_entity_types": ["Domain-Name", "Url"]
+                "connector_entity_types": ["Domain-Name", "Url"],
+                "connector_scope": "urlscan",
+                "connector_scope_types": ["Domain-Name", "Url"]
             }
         }
         
